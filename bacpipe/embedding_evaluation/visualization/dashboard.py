@@ -171,6 +171,28 @@ class DashBoard(DashBoardHelper):
         self.heatmap_plot = dict()
         self.kwargs = kwargs
 
+    @staticmethod
+    def get_audio_dir():
+        """
+        Resolve the audio directory for the current visitor.
+
+        The website embeds the dashboard in an iframe and lets each visitor
+        pick a dataset through the ``?audio_dir=`` query parameter. That value
+        is read from the Panel session args; when it is absent the configured
+        default (``bacpipe.config.audio_dir``) is used instead. The returned
+        path is relative to the website's submodule checkout
+        (``sites/bacpipe/bacpipe_for_website``).
+        """
+        audio_dir = pn.state.session_args.get("audio_dir", [None])[0]
+        if audio_dir:
+            clean_string = (
+                audio_dir.decode("utf-8")
+                if isinstance(audio_dir, bytes)
+                else audio_dir
+            )
+            return "../public/assets/audio/" + clean_string
+        return bacpipe.config.audio_dir
+
     def embedding_panel(self, widget_idx=0):
         """
         Build the 2D embedding plot panel for a widget.
@@ -312,10 +334,25 @@ class DashBoard(DashBoardHelper):
             self.autoplay_audio_select[widget_idx],
         )
 
+        # Client-side audio player. The site runs the dashboard on a headless
+        # server (no sounddevice device), so audio is streamed to the browser
+        # as WAV bytes instead. Each session gets its own dashboard instance,
+        # hence its own player, so playback never leaks between visitors.
+        audio_player = pn.pane.Audio(
+            np.zeros(8000, dtype=np.float32),
+            name="Audio playback",
+            sample_rate=8000,
+            visible=False,
+        )
+        self.spec_plot_obj[widget_idx].audio_player = audio_player
+
+        def play_current_audio(event):
+            self.spec_plot_obj[widget_idx].update_audio_player()
+
         play_audio_button = pn.widgets.Button(
             name="Play audio", button_type="primary"
         )
-        play_audio_button.on_click(self.spec_plot_obj[widget_idx].play_audio)
+        play_audio_button.on_click(play_current_audio)
         save_selection_dialogue = pn.widgets.StaticText(value="", width=400)
 
         save_selection_button = pn.widgets.Button(
@@ -335,7 +372,7 @@ class DashBoard(DashBoardHelper):
                 self.spectrogram_plot_panel[widget_idx],
                 save_selection_dialogue,
                 pn.Row(play_audio_button, save_selection_button),
-                pn.widgets.StaticText(value="", height=80),
+                audio_player,
             ),
         )
 
@@ -971,46 +1008,51 @@ def visualize_using_dashboard(
         Dictionary with parameters for dashboard creation
     """
     models = [bacpipe.confirm_model_name(model, **kwargs) for model in models]
-    from bacpipe.embedding_evaluation.visualization.dashboard import DashBoard
     import panel as pn
 
-    # Configure dashboard
-    dashboard = DashBoard(models, **kwargs)
-
-    # Build the dashboard layout
-    try:
-        dashboard.build_layout()
-    except Exception as e:
-        logger.exception(
-            f"\nError building dashboard layout: {str(e)}\n \n "
-            "Are you sure all the evaluations have been performed? "
-            "If not, rerun the pipeline with `overwrite=True`.\n \n "
-        )
-        raise e
-
     favicon_logo = pkg_resources.files("bacpipe") / "imgs" / "bacpipe_favicon_white.png"
-    
+
     favicon_path = Path(str(favicon_logo))
 
-    template = pn.template.BootstrapTemplate(
-        site="bacpipe dashboard",
-        title="Explore embeddings of audio data",
-        favicon=str(favicon_path),  # must be a path ending in .ico, .png, etc.
-        main=[dashboard.app],
-    )
+    def create_dashboard():
+        # Build a fresh dashboard per session. The per-user ``audio_dir`` is
+        # read from the ``?audio_dir=`` query parameter (see
+        # ``DashBoard.get_audio_dir``), which is how the website lets each
+        # visitor pick a dataset without sharing state.
+        audio_dir = DashBoard.get_audio_dir()
+        session_kwargs = {**kwargs, "audio_dir": audio_dir}
+        dashboard = DashBoard(models, **session_kwargs)
 
-    if not dashboard_websocket_origin is None:
-        websocket_origin = dashboard_websocket_origin
-    else:
-        websocket_origin = None
+        # Build the dashboard layout
+        try:
+            dashboard.build_layout()
+        except Exception as e:
+            logger.exception(
+                f"\nError building dashboard layout: {str(e)}\n \n "
+                "Are you sure all the evaluations have been performed? "
+                "If not, rerun the pipeline with `overwrite=True`.\n \n "
+            )
+            raise e
+
+        template = pn.template.BootstrapTemplate(
+            site="bacpipe dashboard",
+            title="Explore embeddings of audio data",
+            favicon=str(favicon_path),  # must be a path ending in .ico, .png, etc.
+            main=[dashboard.app],
+        )
+        return template
+
+    websocket_origin = dashboard_websocket_origin if dashboard_websocket_origin else None
 
     port_not_available = True
     while port_not_available:
         try:
-            template.show(
+            pn.serve(
+                create_dashboard,  # callable — Panel invokes it per session
                 port=dashboard_port,
                 address=dashboard_address,
                 websocket_origin=websocket_origin,
+                show=False,
             )
             port_not_available = False
         except OSError:

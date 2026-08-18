@@ -120,8 +120,11 @@ class DashBoardHelper:
 
             self.spectrogram_plot_panel[widget_idx].object = new_fig
 
+            # Push the clicked embedding's audio into the client-side player
+            # so the user hears exactly the segment shown in the spectrogram
+            # (the server is headless, so sounddevice playback is not used).
             if self.spec_plot_obj[widget_idx].bool_autoplay_audio:
-                self.spec_plot_obj[widget_idx].play_audio(event=None)
+                self.spec_plot_obj[widget_idx].update_audio_player()
 
         except Exception as e:
             logger.info(f"Error handling click: {str(e)}")

@@ -1,3 +1,4 @@
+import io
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -5,6 +6,7 @@ import librosa as lb
 from scipy.signal.windows import tukey
 from pathlib import Path
 from bacpipe import settings
+import soundfile as sf
 
 
 class SpectrogramPlot:
@@ -34,6 +36,10 @@ class SpectrogramPlot:
         """
         self.audio_dir = audio_dir
         self.panel_static_text = panel_static_text
+        # Client-side audio player pane, attached by the dashboard
+        # (see dashboard.spectrogram_panel). Kept here so clicking an
+        # embedding can push the freshly loaded audio straight into it.
+        self.audio_player = None
         self.all_sample_rates = {}
         self.all_segment_lengths = {}
         for model in model_name.options:
@@ -248,6 +254,29 @@ class SpectrogramPlot:
         sd.play(
             audio, self.sample_rate
         )
+
+    def update_audio_player(self):
+        """
+        Push the currently loaded audio segment into the client-side audio
+        player pane (attached by ``dashboard.spectrogram_panel``).
+
+        The site runs the dashboard on a headless server, so sounddevice-based
+        playback (``play_audio``) has no audio device to play to. Instead the
+        segment is encoded as WAV bytes and sent to the browser's
+        ``pn.pane.Audio`` player. No-op when no audio has been loaded yet or no
+        player pane is attached.
+        """
+        if not hasattr(self, "audio"):
+            return
+        player = getattr(self, "audio_player", None)
+        if player is None:
+            return
+        audio = tukey(len(self.audio), alpha=0.01) * self.audio
+        wav_bytes = io.BytesIO()
+        sf.write(wav_bytes, audio, self.sample_rate, format="WAV")
+        wav_bytes.seek(0)
+        player.object = wav_bytes.getvalue()
+        player.visible = True
 
     def load_audio(self, start, end, filename):
         """

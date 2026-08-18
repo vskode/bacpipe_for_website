@@ -1,23 +1,33 @@
 import bacpipe
+import os
+os.chdir('sites/bacpipe/bacpipe_for_website')
+import panel as pn
+from dataset_manager import get_available_datasets
 
-if __name__ == "__main__":
-    # Run with defaults
+bacpipe.settings.dashboard_port = 5006
+bacpipe.settings.dashboard_websocket_origin = [
+    'localhost:5006',
+    'localhost:5177',
+    'localhost:8000',
+    'bacpipe.siriusly.me',
+    'bacpipe.siriusly.me:80',
+    'siriusly.me',
+    'siriusly.me:80',
+    'null',  # for iframes served from file:// or cross-origin contexts
+]
 
-    # To modify config or settings you can use the following:
-    # bacpipe.config.audio_dir = "data/audio"
-    # this will specify that the audio data is in 'data/audio'
+def datasets_endpoint(request):
+    """Serve available datasets as JSON."""
+    datasets = get_available_datasets()
+    return {'success': True, 'datasets': datasets}
 
-    # bacpipe.settings.main_results_dir = "../bacpipe_results"
-    # this will ensure results are saved in the directory '../bacpipe_results'
+from bacpipe.embedding_evaluation.visualization.dashboard import DashBoard
+audio_dir = DashBoard.get_audio_dir()
 
-    # bacpipe.config.models = ['birdmae', 'naturebeats']
-    # this will run the models birdmae and naturebeats, for which you will have
-    # to download the checkpoints first (see ReadMe file)
+# Register endpoint on Panel's Tornado server
+# pn.serve(
+#     ...,  # your create_dashboard callable from bacpipe.play()
+#     endpoints={'/api/datasets': datasets_endpoint}
+# )
 
-    # bacpipe.play(save_logs=True)
-    # this will save log files, configs and settings, which can be helpful
-    # to retrace your steps if something malfunctions
-
-    # But it's probably easier if you just modify the config.yaml or bacpipe/settings.yaml files
-
-    bacpipe.play(bool_save_logs=True)
+bacpipe.play(audio_dir=audio_dir)
