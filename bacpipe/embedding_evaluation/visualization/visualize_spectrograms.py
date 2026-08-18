@@ -51,21 +51,18 @@ class SpectrogramPlot:
             ]
         self.kwargs = kwargs
 
-    def _update_spec_obj(self, model, bool_autoplay_audio):
+    def _update_spec_obj(self, model):
         """
-        Cache the active model and its audio playback settings.
+        Cache the active model and its playback settings.
 
         Parameters
         ----------
         model : str
             name of the active model
-        bool_autoplay_audio : bool
-            whether audio should autoplay when a point is selected
         """
         self.model_name = model
         self.sample_rate = self.all_sample_rates[model]
         self.segment_length = self.all_segment_lengths[model]
-        self.bool_autoplay_audio = bool_autoplay_audio
 
     def _cache_selected_points(self, selected_points):
         """

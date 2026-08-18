@@ -144,7 +144,6 @@ class DashBoard(DashBoardHelper):
         self.model_select = dict()
         self.label_select = dict()
         self.noise_select = dict()
-        self.autoplay_audio_select = dict()
         self.clfier_select = dict()
         self.species_select = dict()
         self.accumulate_select = dict()
@@ -331,7 +330,6 @@ class DashBoard(DashBoardHelper):
         self._trigger_spec_obj_update[widget_idx] = pn.bind(
             (self.spec_plot_obj[widget_idx]._update_spec_obj),
             self.model_select[widget_idx],
-            self.autoplay_audio_select[widget_idx],
         )
 
         # Client-side audio player. The site runs the dashboard on a headless
@@ -802,30 +800,6 @@ class DashBoard(DashBoardHelper):
                         else None
                     ),
                     (
-                        pn.widgets.StaticText(name="", value="Autoplay audio?")
-                        if not (
-                            self.interactive_embedding_plot is None
-                            or all_models is True
-                        )
-                        else None
-                    ),
-                    (
-                        self.init_widget(
-                            widget_idx,
-                            "autoplay_audio",
-                            name="Autoplay audio",
-                            options=[True, False],
-                            attr="RadioBoxGroup",
-                            value=False,
-                            inline=True,
-                        )
-                        if not (
-                            self.interactive_embedding_plot is None
-                            or all_models is True
-                        )
-                        else None
-                    ),
-                    (
                         self.init_widget(
                             widget_idx,
                             "class",
@@ -985,6 +959,7 @@ def visualize_using_dashboard(
     dashboard_port=5006,
     dashboard_address="localhost",
     dashboard_websocket_origin=False,
+    extra_patterns=None,
     **kwargs,
 ):
     """
@@ -1004,6 +979,10 @@ def visualize_using_dashboard(
     dashboard_websocket_origin : bool, optional
         whether to allow cross origin websocket connections,
         by default False
+    extra_patterns : list, optional
+        list of (url pattern, tornado RequestHandler) tuples to register on
+        the Panel server, e.g. the website's ``/api/datasets`` endpoint that
+        feeds the dataset dropdown, by default None
     kwargs : dict
         Dictionary with parameters for dashboard creation
     """
@@ -1053,6 +1032,7 @@ def visualize_using_dashboard(
                 address=dashboard_address,
                 websocket_origin=websocket_origin,
                 show=False,
+                extra_patterns=extra_patterns or [],
             )
             port_not_available = False
         except OSError:
