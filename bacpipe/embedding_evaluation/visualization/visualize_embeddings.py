@@ -1054,6 +1054,11 @@ def get_arrays_for_spectrogram_text(labels, label_by, data_dict, embeds):
             df_lab[k] = list(v)
     [df_lab.pop(k) for k in data_dict.keys() if k in df_lab.keys()]
     
+    # ``all_preds`` must be defined before the branch: it stays None when the
+    # dataset has no prediction files, in which case the classifier column is
+    # simply left unlabelled below. Defining it inside the branch only caused
+    # an UnboundLocalError on datasets without *all_predictions* files.
+    all_preds = None
     if 'default_classifier' in label_copy:
         file_paths = list((
             Path(embeds['metadata']['embed_dir'])

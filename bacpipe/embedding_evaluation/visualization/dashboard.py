@@ -890,6 +890,36 @@ class DashBoard(DashBoardHelper):
 
         return pn.Column(*widgets, width=180, margin=(10, 10))
 
+    @staticmethod
+    def _build_page_safely(name, builder, *args, **kwargs):
+        """Build one dashboard page, falling back to an error panel on failure.
+
+        A single broken model or incomplete evaluation for one dataset must not
+        take down the whole dashboard session (previously any exception here
+        bubbled up through ``build_layout`` and produced an HTTP 500 — i.e. a
+        dead iframe on the website, and a failed session during pre-warming).
+        The fallback is a Column with *two* children so the
+        ``sidebar, content = page.objects`` unpacking in ``build_layout`` keeps
+        working even for pages that failed to build.
+        """
+        try:
+            return builder(*args, **kwargs)
+        except Exception as e:
+            logger.exception(f"Failed to build dashboard page '{name}': {e}")
+            error = pn.Column(
+                pn.pane.Markdown(
+                    f"## ⚠️ {name} could not be built\n\n"
+                    f"**{type(e).__name__}: {e}**\n\n"
+                    "This usually means the pipeline results for this dataset "
+                    "are incomplete or out of date — rerun the pipeline with "
+                    "`overwrite=True`, or check that every configured model "
+                    "was actually evaluated. The other dashboard tabs are "
+                    "unaffected."
+                ),
+                sizing_mode="stretch_both",
+            )
+            return pn.Column(error, error)
+
     def build_layout(self):
         """
         Builds the layout for the dashboard with two models and a single model page.
@@ -898,14 +928,29 @@ class DashBoard(DashBoardHelper):
         information and content areas for visualizations.
         """
 
-        # Build both model pages to initialize widgets
-        model0_page = self.model_page(0, single_model=True)
-        model1_page = self.model_page(1)
-        model2_page = self.model_page(2)
-        model_all_page = self.all_models_page(3)
-        apply_classifier0_page = self.apply_clfier_page(4)
-        apply_classifier1_page = self.apply_clfier_page(5)
-        apply_classifier2_page = self.apply_clfier_page(6)
+        # Build both model pages to initialize widgets. Each page is guarded
+        # individually so one broken model/evaluation can't kill the session.
+        model0_page = self._build_page_safely(
+            "Single model", self.model_page, 0, single_model=True
+        )
+        model1_page = self._build_page_safely(
+            "Two models (model 1)", self.model_page, 1
+        )
+        model2_page = self._build_page_safely(
+            "Two models (model 2)", self.model_page, 2
+        )
+        model_all_page = self._build_page_safely(
+            "All models", self.all_models_page, 3
+        )
+        apply_classifier0_page = self._build_page_safely(
+            "Single model predictions", self.apply_clfier_page, 4
+        )
+        apply_classifier1_page = self._build_page_safely(
+            "Two model predictions (model 1)", self.apply_clfier_page, 5
+        )
+        apply_classifier2_page = self._build_page_safely(
+            "Two model predictions (model 2)", self.apply_clfier_page, 6
+        )
 
         # Extract sidebars and content
         sidebar0, content0 = model0_page.objects
@@ -1036,6 +1081,20 @@ def visualize_using_dashboard(
     kwargs : dict
         Dictionary with parameters for dashboard creation
     """
+    # Server options that must NOT flow into the per-session dashboard kwargs.
+    # Tuned for the website: the document-build token stays valid for an hour
+    # (slow builds on big datasets no longer die with "Token is expired") and
+    # sessions are kept alive for 12h so pre-warmed sessions stay reusable.
+    server_options = {
+        "session_token_expiration": kwargs.pop("session_token_expiration", 3600),
+        "unused_session_lifetime_milliseconds": kwargs.pop(
+            "unused_session_lifetime_milliseconds", 12 * 60 * 60 * 1000
+        ),
+        "check_unused_sessions_milliseconds": kwargs.pop(
+            "check_unused_sessions_milliseconds", 5 * 60 * 1000
+        ),
+    }
+
     models = [bacpipe.confirm_model_name(model, **kwargs) for model in models]
     import panel as pn
 
@@ -1083,6 +1142,7 @@ def visualize_using_dashboard(
                 websocket_origin=websocket_origin,
                 show=False,
                 extra_patterns=extra_patterns or [],
+                **server_options,
             )
             port_not_available = False
         except OSError:

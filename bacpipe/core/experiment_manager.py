@@ -1530,8 +1530,12 @@ def return_reduced_dimensions(directory):
         2 or 3 depending on if z is in the json or not
     """
     umap_dims = 2
-    import ijson
     try:
+        # ijson is only needed to peek at the reduced-embedding json keys.
+        # Import it lazily inside the try so a missing ijson degrades to the
+        # 2D default instead of raising an ImportError that crashes the whole
+        # dashboard request.
+        import ijson
         file = list(directory.glob('*.json'))[0]
         with open(file, "rb") as f:
             parser = ijson.parse(f)
