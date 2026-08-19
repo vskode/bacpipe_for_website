@@ -36,6 +36,50 @@ sns.set_theme(style="whitegrid")
 matplotlib.use("agg")
 pn.extension("plotly")
 
+# ---------------------------------------------------------------------------
+# Mobile layout
+# ---------------------------------------------------------------------------
+# Bokeh 3.x renders each Panel layout as a custom element whose flex styles
+# (``flex-direction``) live in the element's *own* shadow-DOM stylesheet, so
+# page-level CSS can not reach them. Instead the media queries below are
+# pushed onto the layout models themselves via ``stylesheets=``: they are
+# injected into the same shadow root as the default rules and win on narrow
+# screens thanks to ``!important``.
+MOBILE_BREAKPOINT = 900
+
+_MOBILE_DIRECTION_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    flex-direction: column !important;
+  }}
+}}
+"""
+
+_MOBILE_ITEM_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    flex: 0 0 auto !important;
+    align-self: stretch !important;
+    width: 100% !important;
+  }}
+}}
+"""
+
+
+def _mobile_stack_row(*items, **kwargs):
+    """Return a ``pn.Row`` that stacks its children vertically on phones.
+
+    Children keep their natural order when stacked, so pass the panels in the
+    order you want top-to-bottom on mobile (e.g. the embedding plot before the
+    spectrogram). Extra keyword arguments (``sizing_mode``, ...) are forwarded
+    to the ``Row``.
+    """
+    row = pn.Row(*items, stylesheets=[_MOBILE_DIRECTION_CSS], **kwargs)
+    for item in items:
+        if getattr(item, "stylesheets", None) is not None:
+            item.stylesheets = [*item.stylesheets, _MOBILE_ITEM_CSS]
+    return row
+
 
 class DashBoard(DashBoardHelper):
     """
@@ -472,7 +516,10 @@ class DashBoard(DashBoardHelper):
         title_string = "Model Dashboard for {}".format
         accordion_title = pn.bind(title_string, self.model_select[widget_idx])
         if single_model:
-            data_panels = pn.Row(
+            # The embedding plot sits next to the spectrogram on wide screens.
+            # ``_mobile_stack_row`` stacks them on phones with the embedding
+            # plot first (on top) and the spectrograms below it.
+            data_panels = _mobile_stack_row(
                 pn.Accordion(
                     self.embedding_panel(widget_idx),
                     active=[0],
@@ -510,7 +557,8 @@ class DashBoard(DashBoardHelper):
             sizing_mode="stretch_width",
         )
 
-        return pn.Row(sidebar, main_content, sizing_mode="stretch_width")
+        # Sidebar above content on phones, side by side on desktop.
+        return _mobile_stack_row(sidebar, main_content, sizing_mode="stretch_width")
 
     def all_models_page(self, widget_idx):
         """
@@ -603,7 +651,8 @@ class DashBoard(DashBoardHelper):
             sizing_mode="stretch_width",
         )
 
-        return pn.Row(sidebar, main_content, sizing_mode="stretch_width")
+        # Sidebar above content on phones, side by side on desktop.
+        return _mobile_stack_row(sidebar, main_content, sizing_mode="stretch_width")
 
     def apply_clfier_page(self, widget_idx):
         """
@@ -737,7 +786,8 @@ class DashBoard(DashBoardHelper):
             ),
             sizing_mode="stretch_width",
         )
-        return pn.Row(sidebar, main_content, sizing_mode="stretch_width")
+        # Sidebar above content on phones, side by side on desktop.
+        return _mobile_stack_row(sidebar, main_content, sizing_mode="stretch_width")
 
     def make_sidebar(
         self, widget_idx, model=True, classifier_page=False, all_models=False
@@ -878,9 +928,9 @@ class DashBoard(DashBoardHelper):
             ("Single model", model0_page),
             (
                 "Two models",
-                pn.Row(
-                    pn.Column(sidebar1, sidebar2),
-                    pn.Row(content1, content2),
+                _mobile_stack_row(
+                    _mobile_stack_row(sidebar1, sidebar2),
+                    _mobile_stack_row(content1, content2),
                     sizing_mode="stretch_both",
                 ),
             ),
@@ -888,9 +938,9 @@ class DashBoard(DashBoardHelper):
             ("Single Model Predictions", apply_classifier0_page),
             (
                 "Two Model Predictions",
-                pn.Row(
-                    pn.Column(sidebar4, sidebar5),
-                    pn.Row(content4, content5),
+                _mobile_stack_row(
+                    _mobile_stack_row(sidebar4, sidebar5),
+                    _mobile_stack_row(content4, content5),
                     sizing_mode="stretch_both",
                 ),
             ),

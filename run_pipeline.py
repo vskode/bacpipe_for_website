@@ -1,6 +1,12 @@
 import bacpipe
 import os
-os.chdir('sites/bacpipe/bacpipe_for_website')
+from pathlib import Path
+
+# Always run from the submodule checkout: the dashboard resolves relative
+# paths (../public/assets/...) against the CWD. This also lets launchers
+# (serve_local.py, PM2, systemd, ...) start us from any working directory.
+os.chdir(Path(__file__).resolve().parent)
+
 import json
 import panel as pn
 from tornado.web import RequestHandler

@@ -12,6 +12,19 @@ Datasets live next to the submodule checkout under ``sites/bacpipe/public/assets
 Only datasets that have been fully processed (audio + results present) are
 reported as available, so the website's dataset dropdown never points at a
 dataset that the dashboard can't visualize.
+
+How a dataset actually gets read (there is no ``set_dataset`` call anywhere —
+by design):
+
+- The static page (``public/dashboard.html``) loads this module's
+  ``get_available_datasets()`` through the Panel server's ``/api/datasets``
+  endpoint and drops the choices into its dropdown.
+- When a visitor picks a dataset, the page embeds the Panel app in an iframe
+  with ``?audio_dir=<dataset>`` in the URL.
+- The bacpipe package reads that per-visitor query parameter in
+  ``DashBoard.get_audio_dir()`` and builds a fresh dashboard for exactly that
+  dataset. Each visitor gets their own session, so there is no global
+  "active dataset" to switch.
 """
 
 from pathlib import Path
@@ -77,40 +90,5 @@ def get_available_datasets():
                 }
             )
     return datasets
-
-
-def set_dataset(dataset_name):
-    """
-    Set the active dataset by name.
-
-    Args:
-        dataset_name (str): Name of the dataset directory
-
-    Returns:
-        dict: Status info with 'success', 'dataset_name', and 'path' keys
-    """
-    dataset_path = get_datasets_dir() / dataset_name
-    if not dataset_path.is_dir():
-        return {
-            "success": False,
-            "error": "Dataset not found",
-            "message": f'Dataset "{dataset_name}" not found',
-        }
-    try:
-        import bacpipe
-
-        bacpipe.config.audio_dir = str(dataset_path)
-        return {
-            "success": True,
-            "dataset_name": dataset_name,
-            "path": str(dataset_path),
-            "message": f"Dataset switched to {dataset_name}",
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "message": f"Failed to set dataset: {str(e)}",
-        }
 
 
