@@ -39,31 +39,289 @@ pn.extension("plotly")
 # ---------------------------------------------------------------------------
 # Mobile layout
 # ---------------------------------------------------------------------------
-# Bokeh 3.x renders each Panel layout as a custom element whose flex styles
-# (``flex-direction``) live in the element's *own* shadow-DOM stylesheet, so
-# page-level CSS can not reach them. Instead the media queries below are
-# pushed onto the layout models themselves via ``stylesheets=``: they are
-# injected into the same shadow root as the default rules and win on narrow
-# screens thanks to ``!important``.
+# Making the dashboard usable on a phone needs two independent pieces:
+#
+# 1. A viewport meta tag (set via ``meta_viewport`` on the template further
+#    down). Panel does not add one by default, and without it every mobile
+#    browser lays the page out in a ~980px wide *virtual* viewport and lets the
+#    user pan sideways — the "everything is tiny and scrolls sideways" feel.
+#    It also means ``window.innerWidth`` is 980 on a phone, so none of the
+#    media queries below would ever match.
+#
+# 2. Media queries that live *inside* the components' shadow roots. Bokeh 3.x
+#    renders every Panel layout as an element with its own shadow root, so
+#    page-level CSS cannot reach the flex rules that put panels side by side.
+#    Panel's ``stylesheets`` parameter injects CSS into that same shadow root,
+#    so ``:host`` rules with ``!important`` win on narrow screens.
+#
+# ``apply_mobile_styles`` walks the finished component tree and attaches the
+# fluid rules everywhere, which is what stops fixed pixel widths (the 180px
+# sidebar, the 600px classifier path field, ...) from pushing the page sideways.
+#
+# 3. Sensible defaults for components that do not exist yet.
+#    ``enable_mobile_defaults`` puts the base rules on the ``stylesheets`` class
+#    default, so panes that Panel rebuilds later (``pn.bind`` returns fresh
+#    objects on every update) cannot reintroduce horizontal scrolling.
 MOBILE_BREAKPOINT = 900
+
+# Installed as the *class default* of every component's ``stylesheets`` (see
+# ``enable_mobile_defaults``) so it also reaches the components Panel builds
+# later on: a ``pn.bind`` callback returns brand new objects on every update and
+# those never pass through ``apply_mobile_styles``. Only rules that are safe for
+# literally every component belong here.
+_MOBILE_BASE_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }}
+  select, textarea,
+  .bk-input:not([type="checkbox"]):not([type="radio"]) {{
+    width: 100% !important;
+    /* < 16px makes iOS Safari zoom into the field on focus, which leaves the
+       page scrolled sideways. */
+    font-size: 16px !important;
+    min-height: 40px !important;
+  }}
+  .bk-btn {{
+    min-height: 40px !important;
+    white-space: normal !important;
+  }}
+}}
+"""
 
 _MOBILE_DIRECTION_CSS = f"""
 @media (max-width: {MOBILE_BREAKPOINT}px) {{
   :host {{
     flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    align-self: stretch !important;
+    width: auto !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
   }}
 }}
 """
 
+# ``width: auto`` + ``align-self: stretch`` rather than ``width: 100%``: several
+# layouts carry margins, and ``100%`` ignores them, which is exactly how a panel
+# ends up a dozen pixels wider than the screen.
 _MOBILE_ITEM_CSS = f"""
 @media (max-width: {MOBILE_BREAKPOINT}px) {{
   :host {{
     flex: 0 0 auto !important;
     align-self: stretch !important;
-    width: 100% !important;
+    width: auto !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
   }}
 }}
 """
+
+# On a phone the plots are what the visitor came for, so the settings column
+# (with the logo and contact block appended to it) is pushed to the bottom of
+# the stack. Flex ``order`` does that without touching the desktop layout, where
+# the media query does not apply and the sidebar stays on the left.
+_MOBILE_LAST_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    order: 99 !important;
+  }}
+}}
+"""
+
+# Attached to *every* component: neutralises fixed pixel widths so nothing can
+# be wider than the phone screen, and lets flex children actually shrink
+# (``min-width: 0`` — flex items default to ``min-width: auto``, which is the
+# usual reason a single wide child blows up the whole row).
+_MOBILE_FLUID_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    max-width: 100% !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }}
+}}
+"""
+
+# The tab bar is the one element that cannot shrink: five labels never fit on
+# a phone, so let them wrap onto multiple lines instead of scrolling sideways.
+# Bigger hit areas make the tabs actually tappable.
+_MOBILE_TABS_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }}
+  .bk-header {{
+    flex-wrap: wrap !important;
+    row-gap: 4px !important;
+    overflow-x: visible !important;
+  }}
+  .bk-header .bk-tab {{
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    padding: 8px 10px !important;
+    font-size: 0.95rem !important;
+    white-space: normal !important;
+    text-align: center !important;
+  }}
+}}
+"""
+
+# Plotly figures declare their height in the figure layout itself (700px for the
+# embedding, 550px for the spectrogram), so the height must be left alone: a CSS
+# clamp only shrinks the wrapper and lets the canvas spill over the buttons
+# below it. The width is the part that matters on a phone — the panes are
+# ``stretch_width``, and Panel's Plotly view relayouts the figure to the width
+# the CSS below gives the pane (see the note on plotly's own ``responsive``
+# config in ``spectrogram_panel``).
+_MOBILE_PLOT_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    align-self: stretch !important;
+    width: auto !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }}
+}}
+"""
+
+
+# Widgets get a touch-friendly treatment on phones: they fill the width of the
+# (now single-column) layout, tap targets are at least ~40px high and inputs use
+# a 16px font — anything smaller makes iOS Safari zoom the page in on focus,
+# which is a classic way to end up scrolled sideways.
+_MOBILE_WIDGET_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    width: auto !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    align-self: stretch !important;
+    flex-shrink: 1 !important;
+    box-sizing: border-box !important;
+  }}
+  select, input, textarea, .bk-input {{
+    width: 100% !important;
+    font-size: 16px !important;
+    min-height: 40px !important;
+  }}
+  button, .bk-btn {{
+    min-height: 40px !important;
+    font-size: 1rem !important;
+    white-space: normal !important;
+  }}
+}}
+"""
+
+# Chrome of the Bootstrap template itself (header, container, main column).
+# These elements live in the normal document — not in a shadow root — so they
+# are styled through the template's ``raw_css`` instead of ``stylesheets``.
+_TEMPLATE_MOBILE_CSS = f"""
+html, body {{
+  max-width: 100%;
+  /* ``clip`` behaves like ``hidden`` but does not turn the vertical axis into a
+     scroll container, so the page keeps scrolling on the document itself.
+     ``hidden`` is kept first as a fallback for older browsers. */
+  overflow-x: hidden;
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+  /* Always reserve room for the vertical scrollbar. Without it a plot that
+     grows just past the viewport height makes the scrollbar appear, which
+     narrows the content, which shrinks the plot, which hides the scrollbar
+     again — a width oscillation that shows up as a shaking figure. */
+  scrollbar-gutter: stable;
+}}
+#main {{
+  /* Same reasoning as above: on desktop this column is the scroll container. */
+  scrollbar-gutter: stable;
+}}
+#container {{
+  /* The template ships ``vh-100``; ``dvh`` tracks the *visible* viewport so a
+     phone's address bar can not cut off the bottom of the dashboard. */
+  height: 100dvh !important;
+  max-width: 100%;
+  overflow-x: hidden;
+}}
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  /* Desktop keeps the dashboard inside a fixed-height, internally scrolling
+     column. On a phone that nested scroll area feels broken (no momentum, and
+     the header eats a chunk of every scroll), so let the page itself scroll:
+     a single scroll container with a sticky header. */
+  #container {{
+    height: auto !important;
+    min-height: 100dvh;
+    overflow: visible !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }}
+  #content.row {{
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    overflow: visible !important;
+  }}
+  #main {{
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+    overflow-x: hidden !important;
+    overflow-y: visible !important;
+    max-height: none !important;
+  }}
+  #header {{
+    padding: 6px 12px !important;
+    min-height: 0 !important;
+  }}
+  #header .app-header {{
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: baseline !important;
+    gap: 0 6px !important;
+  }}
+  #header .title {{
+    font-size: 1rem !important;
+    line-height: 1.3 !important;
+  }}
+  /* The website already shows a banner above the iframe, so the long subtitle
+     would only eat vertical space on a phone. */
+  #header .app-header > span.title,
+  #header .app-header > a.title:nth-of-type(2) {{
+    display: none !important;
+  }}
+}}
+"""
+
+
+def _add_stylesheet(obj, css):
+    """Attach ``css`` to a Panel object's shadow root, once.
+
+    ``stylesheets`` is a list parameter, so it is replaced (not mutated) to
+    avoid touching the parameter default shared by every instance.
+    """
+    sheets = getattr(obj, "stylesheets", None)
+    if sheets is None or css in sheets:
+        return
+    obj.stylesheets = [*sheets, css]
+
+
+def enable_mobile_defaults():
+    """Give every Panel component the mobile base stylesheet by default.
+
+    ``apply_mobile_styles`` can only reach the components that exist when the
+    layout is built. Panes driven by ``pn.bind`` throw their content away and
+    build new components on every update, so without a default they would render
+    at their desktop size again and push the page sideways.
+
+    ``stylesheets`` is declared once on ``Layoutable`` and shared by every
+    subclass, so setting the default here covers panes, layouts and widgets
+    alike. It is idempotent, which matters because a new dashboard is built for
+    every visitor session.
+    """
+    default = pn.viewable.Layoutable.param.stylesheets.default
+    if _MOBILE_BASE_CSS in default:
+        return
+    pn.viewable.Layoutable.param.stylesheets.default = [*default, _MOBILE_BASE_CSS]
 
 
 def _mobile_stack_row(*items, **kwargs):
@@ -74,11 +332,84 @@ def _mobile_stack_row(*items, **kwargs):
     spectrogram). Extra keyword arguments (``sizing_mode``, ...) are forwarded
     to the ``Row``.
     """
-    row = pn.Row(*items, stylesheets=[_MOBILE_DIRECTION_CSS], **kwargs)
+    # Passing ``stylesheets`` explicitly replaces the class default installed by
+    # ``enable_mobile_defaults``, so the base sheet is repeated here.
+    row = pn.Row(
+        *items, stylesheets=[_MOBILE_BASE_CSS, _MOBILE_DIRECTION_CSS], **kwargs
+    )
     for item in items:
-        if getattr(item, "stylesheets", None) is not None:
-            item.stylesheets = [*item.stylesheets, _MOBILE_ITEM_CSS]
+        _add_stylesheet(item, _MOBILE_ITEM_CSS)
     return row
+
+
+def _mobile_move_last(obj):
+    """Send ``obj`` to the bottom of the stack on phones.
+
+    Only has an effect inside a layout that ``_mobile_stack_row`` turns into a
+    column on narrow screens; the desktop order is untouched. Returns ``obj`` so
+    it can be used inline in a layout definition.
+    """
+    _add_stylesheet(obj, _MOBILE_LAST_CSS)
+    return obj
+
+
+def _iter_components(obj, seen=None):
+    """Yield ``obj`` and every nested component, depth first.
+
+    ``Viewable.select`` is not usable here: ``Accordion.select`` only descends
+    into the internal ``Card`` objects it wraps its children in, and those are
+    built lazily on first render. At layout build time the cards do not exist
+    yet, so ``select()`` silently skips everything inside an accordion — which
+    is most of this dashboard. Walking ``objects`` instead is reliable, and
+    ``_panels`` is included so already rendered cards are picked up too.
+    """
+    if seen is None:
+        seen = set()
+    if id(obj) in seen:
+        return
+    seen.add(id(obj))
+    yield obj
+
+    children = list(getattr(obj, "objects", None) or [])
+    panels = getattr(obj, "_panels", None)
+    if isinstance(panels, dict):
+        children += list(panels.values())
+    for child in children:
+        if isinstance(child, pn.viewable.Viewable):
+            yield from _iter_components(child, seen)
+
+
+def apply_mobile_styles(root):
+    """Make an already built component tree fit a phone screen.
+
+    Walks every nested component and injects the fluid media query into its
+    shadow root. Fixed widths set in Python (the 180px sidebar, the wide
+    classifier widgets, ...) stay in place on desktop but can no longer exceed
+    the viewport on a phone, which is what removes the horizontal scrolling.
+
+    Parameters
+    ----------
+    root : panel.viewable.Viewable
+        the root of the dashboard layout (e.g. the ``pn.Tabs`` app)
+    """
+    try:
+        objects = list(_iter_components(root))
+    except Exception:  # pragma: no cover - defensive, layout must still render
+        logger.warning("Could not walk the layout to apply mobile styles.")
+        return
+
+    for obj in objects:
+        if isinstance(obj, pn.Tabs):
+            _add_stylesheet(obj, _MOBILE_TABS_CSS)
+        elif isinstance(obj, pn.pane.Plotly):
+            _add_stylesheet(obj, _MOBILE_PLOT_CSS)
+        elif isinstance(obj, pn.widgets.TooltipIcon):
+            # A full-width tooltip icon would be a huge invisible tap target.
+            _add_stylesheet(obj, _MOBILE_FLUID_CSS)
+        elif isinstance(obj, pn.widgets.Widget):
+            _add_stylesheet(obj, _MOBILE_WIDGET_CSS)
+        else:
+            _add_stylesheet(obj, _MOBILE_FLUID_CSS)
 
 
 class DashBoard(DashBoardHelper):
@@ -201,6 +532,11 @@ class DashBoard(DashBoardHelper):
         self.spectrogram_plot_panel = dict()
         self.spec_plot_obj = dict()
         self._trigger_spec_obj_update = dict()
+        # Client-side audio player per widget, plus the radio button that
+        # decides whether clicking a point in the embedding plot plays the
+        # corresponding segment right away.
+        self.audio_player = dict()
+        self.autoplay_select = dict()
 
         self.class_options = dict()
         self.preds_data = dict()
@@ -356,6 +692,15 @@ class DashBoard(DashBoardHelper):
             SpectrogramPlot.dummy_image(title=""),
             sizing_mode="stretch_width",
             height=self.kwargs.get("spectrogram_plot_height"),
+            # NOTE: do *not* pass ``config={"responsive": True}`` here.
+            # Panel's Plotly view already resizes the figure on every layout
+            # pass (``after_layout`` -> ``Plotly.relayout({width, height})``
+            # using the pane's ``clientWidth``), so the pane follows the
+            # container on phones by itself. Plotly's own ``responsive`` option
+            # additionally installs a ResizeObserver that recomputes the size
+            # from the container and drops the width Panel just set — the two
+            # then keep correcting each other and the plot visibly shakes,
+            # growing and shrinking without ever settling.
         )
 
         embedding_info_dialogue = pn.widgets.StaticText(
@@ -378,24 +723,87 @@ class DashBoard(DashBoardHelper):
 
         # Client-side audio player. The site runs the dashboard on a headless
         # server (no sounddevice device), so audio is streamed to the browser
-        # as WAV bytes instead. Each session gets its own dashboard instance,
-        # hence its own player, so playback never leaks between visitors.
+        # instead. Each session gets its own dashboard instance, hence its own
+        # player, so playback never leaks between visitors. It starts out empty
+        # (and hidden) and appears once a segment has been loaded, because the
+        # native controls are the only playback trigger a phone browser always
+        # allows.
         audio_player = pn.pane.Audio(
-            np.zeros(8000, dtype=np.float32),
             name="Audio playback",
-            sample_rate=8000,
             visible=False,
+            sizing_mode="stretch_width",
+            # Play the segment as soon as it arrives in the browser. A new
+            # source only ever arrives because the visitor pressed "Play
+            # audio" or clicked a point with playback on click enabled, so this
+            # never plays anything unprompted - and it covers the case where
+            # ``paused`` is already False client side (changing the source
+            # pauses the element without notifying the model).
+            autoplay=True,
         )
         self.spec_plot_obj[widget_idx].audio_player = audio_player
+        self.audio_player[widget_idx] = audio_player
+
+        # Clicking a point in the embedding plot loads its spectrogram and, by
+        # default, plays the segment straight away - that pairing is the whole
+        # point of the dashboard. Anyone browsing in a quiet room (or clicking
+        # through many points in a row) can switch it off here; the "Play audio"
+        # button and the player's own controls keep working either way.
+        autoplay_select = pn.widgets.RadioBoxGroup(
+            name="Audio on click",
+            options={"play segment": True, "stay silent": False},
+            value=True,
+            inline=True,
+        )
+        self.autoplay_select[widget_idx] = autoplay_select
+        autoplay_setting = pn.Row(
+            pn.pane.Markdown(
+                "**Audio on click:**",
+                margin=(0, 5, 0, 10),
+            ),
+            autoplay_select,
+            sizing_mode="stretch_width",
+        )
 
         def play_current_audio(event):
-            self.spec_plot_obj[widget_idx].update_audio_player()
+            spec_plot = self.spec_plot_obj[widget_idx]
+            if not spec_plot.update_audio_player():
+                embedding_info_dialogue.visible = True
+                embedding_info_dialogue.value = (
+                    "Click a point in the embedding plot first, "
+                    "then press play."
+                )
+                return
+            # Starts playback on browsers that allow it after the visitor has
+            # interacted with the page (desktop, Android). Where it is refused
+            # (iOS only starts playback from inside the tap handler itself) the
+            # player below the buttons is now visible and can be used directly,
+            # and the js_on_click callback plays it on the next tap.
+            audio_player.paused = False
 
         play_audio_button = pn.widgets.Button(
             name="Play audio", button_type="primary"
         )
         play_audio_button.on_click(play_current_audio)
-        save_selection_dialogue = pn.widgets.StaticText(value="", width=400)
+        # Runs in the browser during the tap itself, which is what mobile
+        # browsers require to start playback - a websocket round-trip does not
+        # count as a user gesture. Guarded, so an empty player is not asked to
+        # play (the value is a WAV data URI, empty until a segment is loaded).
+        play_audio_button.js_on_click(
+            args={"player": audio_player},
+            code=(
+                "if ((player.value || '').length > 100) {"
+                " player.time = 0; player.paused = false; }"
+            ),
+        )
+        save_selection_dialogue = pn.widgets.StaticText(
+            value="",
+            # A fixed pixel width here used to bubble up as a ``min-width`` on
+            # the surrounding accordion card (bokeh derives a container's
+            # minimum size from its children), which made the whole dashboard
+            # wider than a phone screen.
+            sizing_mode="stretch_width",
+        )
+
 
         save_selection_button = pn.widgets.Button(
             name="Save selection to file", button_type="primary"
@@ -414,6 +822,7 @@ class DashBoard(DashBoardHelper):
                 self.spectrogram_plot_panel[widget_idx],
                 save_selection_dialogue,
                 pn.Row(play_audio_button, save_selection_button),
+                autoplay_setting,
                 audio_player,
             ),
         )
@@ -557,8 +966,13 @@ class DashBoard(DashBoardHelper):
             sizing_mode="stretch_width",
         )
 
-        # Sidebar above content on phones, side by side on desktop.
-        return _mobile_stack_row(sidebar, main_content, sizing_mode="stretch_width")
+        # Side by side on desktop. On a phone the plots come first and the
+        # settings (plus the logo and contact block) sit at the bottom.
+        return _mobile_stack_row(
+            _mobile_move_last(sidebar),
+            main_content,
+            sizing_mode="stretch_width",
+        )
 
     def all_models_page(self, widget_idx):
         """
@@ -651,8 +1065,13 @@ class DashBoard(DashBoardHelper):
             sizing_mode="stretch_width",
         )
 
-        # Sidebar above content on phones, side by side on desktop.
-        return _mobile_stack_row(sidebar, main_content, sizing_mode="stretch_width")
+        # Side by side on desktop. On a phone the plots come first and the
+        # settings (plus the logo and contact block) sit at the bottom.
+        return _mobile_stack_row(
+            _mobile_move_last(sidebar),
+            main_content,
+            sizing_mode="stretch_width",
+        )
 
     def apply_clfier_page(self, widget_idx):
         """
@@ -679,7 +1098,11 @@ class DashBoard(DashBoardHelper):
             placeholder=(
                 self.path_func(self.models[0]).probe_path / "linear_probe.pt"
             ).as_posix(),
-            width=600,
+            # Fluid instead of a fixed 600px: a fixed width propagates as a
+            # ``min-width`` onto the enclosing card and forces the page to be
+            # wider than a phone screen.
+            sizing_mode="stretch_width",
+            max_width=600,
             max_length=800,
             visible=False,
         )
@@ -693,12 +1116,19 @@ class DashBoard(DashBoardHelper):
         self.btn_run_clfier[widget_idx] = pn.widgets.Button(
             # name='Apply linear classifier',
             name="Load predictions from integrated classifier",
-            width=100,
+            # ``max_width`` (rather than ``width``) keeps the desktop size but
+            # lets the button shrink to the phone's width.
+            sizing_mode="stretch_width",
+            max_width=300,
             height=30,
         )
 
         self.progress_bar[widget_idx] = pn.indicators.Progress(
-            value=0, max=100, bar_color="primary", width=500
+            value=0,
+            max=100,
+            bar_color="primary",
+            sizing_mode="stretch_width",
+            max_width=500,
         )
 
         self.loading_test_placeholder[widget_idx] = pn.widgets.StaticText(
@@ -786,8 +1216,13 @@ class DashBoard(DashBoardHelper):
             ),
             sizing_mode="stretch_width",
         )
-        # Sidebar above content on phones, side by side on desktop.
-        return _mobile_stack_row(sidebar, main_content, sizing_mode="stretch_width")
+        # Side by side on desktop. On a phone the plots come first and the
+        # settings (plus the logo and contact block) sit at the bottom.
+        return _mobile_stack_row(
+            _mobile_move_last(sidebar),
+            main_content,
+            sizing_mode="stretch_width",
+        )
 
     def make_sidebar(
         self, widget_idx, model=True, classifier_page=False, all_models=False
@@ -974,7 +1409,7 @@ class DashBoard(DashBoardHelper):
             (
                 "Two models",
                 _mobile_stack_row(
-                    _mobile_stack_row(sidebar1, sidebar2),
+                    _mobile_move_last(_mobile_stack_row(sidebar1, sidebar2)),
                     _mobile_stack_row(content1, content2),
                     sizing_mode="stretch_both",
                 ),
@@ -984,7 +1419,7 @@ class DashBoard(DashBoardHelper):
             (
                 "Two Model Predictions",
                 _mobile_stack_row(
-                    _mobile_stack_row(sidebar4, sidebar5),
+                    _mobile_move_last(_mobile_stack_row(sidebar4, sidebar5)),
                     _mobile_stack_row(content4, content5),
                     sizing_mode="stretch_both",
                 ),
@@ -995,6 +1430,10 @@ class DashBoard(DashBoardHelper):
         self.add_styling(
             model0_page, model2_page, model_all_page, apply_classifier0_page
         )
+
+        # Last step: make every nested component fluid on narrow screens so the
+        # dashboard fits the width of a phone instead of scrolling sideways.
+        apply_mobile_styles(self.app)
 
     def add_styling(self, *pages):
         """
@@ -1107,7 +1546,11 @@ def visualize_using_dashboard(
         # read from the ``?audio_dir=`` query parameter (see
         # ``DashBoard.get_audio_dir``), which is how the website lets each
         # visitor pick a dataset without sharing state.
+        # Must run before any component is created, so late/dynamically built
+        # components are mobile friendly too.
+        enable_mobile_defaults()
         audio_dir = DashBoard.get_audio_dir()
+
         session_kwargs = {**kwargs, "audio_dir": audio_dir}
         dashboard = DashBoard(models, **session_kwargs)
 
@@ -1126,8 +1569,14 @@ def visualize_using_dashboard(
             site="bacpipe dashboard",
             title="Explore embeddings of audio data",
             favicon=str(favicon_path),  # must be a path ending in .ico, .png, etc.
+            # Without this, mobile browsers lay the page out in a ~980px wide
+            # virtual viewport and let the visitor pan sideways. With it the
+            # page is exactly as wide as the screen and the dashboard's mobile
+            # media queries (see MOBILE_BREAKPOINT) actually match.
+            meta_viewport="width=device-width, initial-scale=1, viewport-fit=cover",
             main=[dashboard.app],
         )
+        template.config.raw_css = [_TEMPLATE_MOBILE_CSS]
         return template
 
     websocket_origin = dashboard_websocket_origin if dashboard_websocket_origin else None

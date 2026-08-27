@@ -120,12 +120,61 @@ class DashBoardHelper:
 
             self.spectrogram_plot_panel[widget_idx].object = new_fig
 
-            # Like upstream bacpipe, clicking only loads (caches) the audio
-            # segment; playback is triggered by the "Play audio" button,
-            # which pushes the cached segment into the client-side player.
+            # Clicking a point loads (caches) the audio segment. Unless the
+            # visitor switched the "Audio on click" radio button to "stay
+            # silent", the segment is also pushed straight into the client-side
+            # player so the sound arrives together with the spectrogram.
+            if self.autoplay_on_click(widget_idx):
+                self.play_clicked_audio(widget_idx)
 
         except Exception as e:
             logger.info(f"Error handling click: {str(e)}")
+
+    def autoplay_on_click(self, widget_idx=0):
+        """
+        Whether clicking a point should start playback right away.
+
+        Parameters
+        ----------
+        widget_idx : int, optional
+            index of the widget the click belongs to, by default 0
+
+        Returns
+        -------
+        bool
+            True when the "Audio on click" radio button is set to play (the
+            default, also used when no such widget exists).
+        """
+        widget = getattr(self, "autoplay_select", {}).get(widget_idx)
+        if widget is None:
+            return True
+        return bool(widget.value)
+
+    def play_clicked_audio(self, widget_idx=0):
+        """
+        Push the clicked segment into the browser player and start it.
+
+        The click on the plot is the user gesture browsers ask for before they
+        allow audio, so playback starts on desktop and Android. iOS only starts
+        audio from inside its own tap handler, so there the newly visible player
+        controls (or the "Play audio" button, which plays client side) remain the
+        way to listen.
+
+        Parameters
+        ----------
+        widget_idx : int, optional
+            index of the widget the click belongs to, by default 0
+        """
+        spec_plot = self.spec_plot_obj[widget_idx]
+        if not spec_plot.update_audio_player():
+            return
+        player = getattr(spec_plot, "audio_player", None)
+        if player is None:
+            return
+        # Swapping the source pauses the ``<audio>`` element client side without
+        # telling the model, so ``paused`` is reset here as well - together with
+        # the pane's ``autoplay=True`` that gets the new segment playing.
+        player.paused = False
 
     def init_interactive_embed_plot(self, widget_idx):
         """
@@ -143,7 +192,12 @@ class DashBoardHelper:
             SpectrogramPlot.dummy_image(title="Loading..."),
             sizing_mode="stretch_width",
             height=settings.embed_fig_height,
-            config={"responsive": True},
+            # No ``config={"responsive": True}``: Panel relayouts the figure to
+            # the pane width on every layout pass, while plotly's responsive
+            # ResizeObserver would recompute it from the container at the same
+            # time. Both fired in turn and the embedding plot kept resizing
+            # itself (visible as a permanently shaking plot). See the note in
+            # ``dashboard.spectrogram_panel``.
         )
 
         # Add event handlers

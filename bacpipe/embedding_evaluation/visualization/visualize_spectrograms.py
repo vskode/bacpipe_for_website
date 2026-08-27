@@ -1,4 +1,3 @@
-import io
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -6,7 +5,6 @@ import librosa as lb
 from scipy.signal.windows import tukey
 from pathlib import Path
 from bacpipe import settings
-import soundfile as sf
 
 
 class SpectrogramPlot:
@@ -259,21 +257,31 @@ class SpectrogramPlot:
 
         The site runs the dashboard on a headless server, so sounddevice-based
         playback (``play_audio``) has no audio device to play to. Instead the
-        segment is encoded as WAV bytes and sent to the browser's
-        ``pn.pane.Audio`` player. No-op when no audio has been loaded yet or no
-        player pane is attached.
+        segment is handed to the browser's ``pn.pane.Audio`` player, which
+        encodes it as a WAV data URI itself. No-op when no audio has been loaded
+        yet or no player pane is attached.
+
+        Returns
+        -------
+        bool
+            True when a segment was pushed to the player.
         """
         if not hasattr(self, "audio"):
-            return
+            return False
         player = getattr(self, "audio_player", None)
         if player is None:
-            return
+            return False
+        # ``pn.pane.Audio.object`` only accepts a path/URL, a 1-dim numpy array
+        # or a torch tensor - passing encoded WAV *bytes* raises a ValueError
+        # (which used to make the "Play audio" button do nothing at all). The
+        # pane turns the array into a WAV data URI itself, using ``sample_rate``.
         audio = tukey(len(self.audio), alpha=0.01) * self.audio
-        wav_bytes = io.BytesIO()
-        sf.write(wav_bytes, audio, self.sample_rate, format="WAV")
-        wav_bytes.seek(0)
-        player.object = wav_bytes.getvalue()
+        player.sample_rate = int(self.sample_rate)
+        player.object = np.asarray(audio, dtype=np.float32)
+        # Native <audio> controls are the one playback trigger every mobile
+        # browser accepts, so the player must be reachable once audio is loaded.
         player.visible = True
+        return True
 
     def load_audio(self, start, end, filename):
         """
