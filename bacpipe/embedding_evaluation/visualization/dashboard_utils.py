@@ -123,7 +123,7 @@ class DashBoardHelper:
             # Clicking a point loads (caches) the audio segment. Unless the
             # visitor switched the "Audio on click" radio button to "stay
             # silent", the segment is also pushed straight into the client-side
-            # player so the sound arrives together with the spectrogram.
+            # player so it is ready to play on that device.
             if self.autoplay_on_click(widget_idx):
                 self.play_clicked_audio(widget_idx)
 
@@ -152,13 +152,13 @@ class DashBoardHelper:
 
     def play_clicked_audio(self, widget_idx=0):
         """
-        Push the clicked segment into the browser player and start it.
+        Push the clicked segment into the browser player (paused, ready to play).
 
-        The click on the plot is the user gesture browsers ask for before they
-        allow audio, so playback starts on desktop and Android. iOS only starts
-        audio from inside its own tap handler, so there the newly visible player
-        controls (or the "Play audio" button, which plays client side) remain the
-        way to listen.
+        The segment is loaded and the player becomes visible, but playback is
+        *not* started from the server: the dashboard shares one bokeh session
+        between every visitor, so unpausing the shared player would start sound
+        on every connected device. The visitor starts the sound with the
+        "Play audio" button or the native <audio> controls on their own device.
 
         Parameters
         ----------
@@ -166,15 +166,13 @@ class DashBoardHelper:
             index of the widget the click belongs to, by default 0
         """
         spec_plot = self.spec_plot_obj[widget_idx]
-        if not spec_plot.update_audio_player():
-            return
-        player = getattr(spec_plot, "audio_player", None)
-        if player is None:
-            return
-        # Swapping the source pauses the ``<audio>`` element client side without
-        # telling the model, so ``paused`` is reset here as well - together with
-        # the pane's ``autoplay=True`` that gets the new segment playing.
-        player.paused = False
+        # Load the clicked segment into the (now visible) client-side player so
+        # the visitor can start it with the "Play audio" button or the native
+        # <audio> controls. We intentionally do NOT unpause the player here:
+        # the website shares a single bokeh session between all visitors, so a
+        # server-side ``paused=False`` would start playback in every connected
+        # browser instead of only on the device that clicked the point.
+        spec_plot.update_audio_player()
 
     def init_interactive_embed_plot(self, widget_idx):
         """

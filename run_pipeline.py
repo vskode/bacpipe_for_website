@@ -202,15 +202,20 @@ def start_prewarm(port=5006):
     threading.Thread(target=_loop, daemon=True, name="bacpipe-prewarm").start()
 
 
-# Long-lived sessions + a longer build-token lifetime: the pre-warmed sessions
-# stay usable for ~12h and a slow (large dataset) build never expires mid-way.
+# Keep pre-warmed sessions alive for ~12h and give the bokeh session token a
+# 24h lifetime. The token is embedded in the page a browser loads and is
+# re-sent on every websocket (re)connect, so it must outlive the session
+# itself: with a 1h token a visitor who keeps the dashboard open for longer
+# than an hour gets "Token is expired" on reconnect (the recurring cron
+# error). 24h comfortably covers the daily restart, so tokens never expire
+# before their session is torn down.
 start_prewarm()
 
 bacpipe.play(
     audio_dir=audio_dir,
     main_results_dir='../public/assets/embeddings',
     extra_patterns=[(r"/api/datasets", DatasetListHandler)],
-    session_token_expiration=3600,
+    session_token_expiration=24 * 60 * 60,
     unused_session_lifetime_milliseconds=12 * 60 * 60 * 1000,
     check_unused_sessions_milliseconds=5 * 60 * 1000,
 )

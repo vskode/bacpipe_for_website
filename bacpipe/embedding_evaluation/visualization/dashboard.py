@@ -237,6 +237,9 @@ html, body {{
 #main {{
   /* Same reasoning as above: on desktop this column is the scroll container. */
   scrollbar-gutter: stable;
+  /* Prevent a horizontal scrollbar from appearing/disappearing as the plot
+     width settles — that back-and-forth is the other way a figure shakes. */
+  overflow-x: hidden;
 }}
 #container {{
   /* The template ships ``vh-100``; ``dvh`` tracks the *visible* viewport so a
@@ -410,6 +413,79 @@ def apply_mobile_styles(root):
             _add_stylesheet(obj, _MOBILE_WIDGET_CSS)
         else:
             _add_stylesheet(obj, _MOBILE_FLUID_CSS)
+
+
+_EMBEDDING_PLAY_ON_CLICK_JS = """
+// Play the clicked segment on *this* device only.
+//
+// The dashboard pins every visitor to the same pre-warmed bokeh session
+// (``dash-<dataset>``), so a server-side playback trigger would broadcast to
+// every connected browser. This callback runs client side on the
+// ``plotly_event`` instead, so only the browser that actually clicked a point
+// unpauses the shared <audio> element.
+//
+// ``cb_obj`` is the PlotlyEvent and ``cb_obj.data`` is
+// ``{type: "click", data: {points: [...]}}``. The same event fires for hover
+// and selection too, so ignore everything but a click on a real point.
+const evt = cb_obj && cb_obj.data;
+if (!evt || evt.type !== "click") { return; }
+if (!autoplay.value) { return; }
+const points = evt.data && evt.data.points;
+if (!points || !points.length) { return; }
+
+// The server loads the clicked segment in response to this same click and
+// pushes the new source to the shared player a moment later. Wait until the
+// player value actually changes, then start playback on this device.
+const before = player.value;
+const started = Date.now();
+const timer = setInterval(() => {
+  const value = player.value || "";
+  if (value.length > 100 && value !== before) {
+    player.time = 0;
+    player.paused = false;
+    clearInterval(timer);
+  } else if (Date.now() - started > 8000) {
+    clearInterval(timer);
+  }
+}, 40);
+"""
+
+
+def _first_model(obj):
+    """Return the bokeh model Panel built for ``obj``, if any."""
+    models = getattr(obj, "_models", None) or {}
+    if not models:
+        return None
+    return next(iter(models.values()))[0]
+
+
+def _attach_embedding_autoplay(plot_pane, audio_player, autoplay_select):
+    """Start playback on the clicking device when an embedding point is chosen.
+
+    The embedding plot is a ``pn.pane.Plotly`` whose bokeh model emits a
+    client-side ``plotly_event`` for every plotly interaction. A JS callback
+    attached to that event runs in the browser that made the gesture, so
+    unpausing the shared audio player only ever affects that device (keeping
+    playback per-client even though every visitor shares one bokeh session).
+    """
+
+    def _on_load():
+        from bokeh.models import CustomJS
+
+        plot_model = _first_model(plot_pane)
+        player_model = _first_model(audio_player)
+        autoplay_model = _first_model(autoplay_select)
+        if not (plot_model and player_model and autoplay_model):
+            return
+        plot_model.js_on_event(
+            "plotly_event",
+            CustomJS(
+                args={"player": player_model, "autoplay": autoplay_model},
+                code=_EMBEDDING_PLAY_ON_CLICK_JS,
+            ),
+        )
+
+    pn.state.onload(_on_load)
 
 
 class DashBoard(DashBoardHelper):
@@ -723,39 +799,53 @@ class DashBoard(DashBoardHelper):
 
         # Client-side audio player. The site runs the dashboard on a headless
         # server (no sounddevice device), so audio is streamed to the browser
-        # instead. Each session gets its own dashboard instance, hence its own
-        # player, so playback never leaks between visitors. It starts out empty
-        # (and hidden) and appears once a segment has been loaded, because the
-        # native controls are the only playback trigger a phone browser always
-        # allows.
+        # instead. It starts out empty (and hidden) and appears once a segment
+        # has been loaded, because the native controls are the one playback
+        # trigger every phone browser allows. Playback is never started from
+        # the server (see the ``autoplay=False`` note below) — it is always
+        # triggered by a gesture in the visitor's own browser.
         audio_player = pn.pane.Audio(
             name="Audio playback",
             visible=False,
             sizing_mode="stretch_width",
-            # Play the segment as soon as it arrives in the browser. A new
-            # source only ever arrives because the visitor pressed "Play
-            # audio" or clicked a point with playback on click enabled, so this
-            # never plays anything unprompted - and it covers the case where
-            # ``paused`` is already False client side (changing the source
-            # pauses the element without notifying the model).
-            autoplay=True,
+            # Deliberately NOT autoplay. The website pins every visitor to the
+            # same pre-warmed bokeh session (``dash-<dataset>``), so any
+            # server-side playback trigger — ``autoplay=True`` on the pane, or
+            # setting ``paused=False`` — is broadcast to *every* connected
+            # browser. A click on one device would then start sound on another.
+            # Playback is instead always started by the visitor's own tap (the
+            # "Play audio" button or the native <audio> controls), which only
+            # ever affects the device that made the gesture.
+            autoplay=False,
         )
         self.spec_plot_obj[widget_idx].audio_player = audio_player
         self.audio_player[widget_idx] = audio_player
 
         # Clicking a point in the embedding plot loads its spectrogram and, by
-        # default, plays the segment straight away - that pairing is the whole
-        # point of the dashboard. Anyone browsing in a quiet room (or clicking
-        # through many points in a row) can switch it off here; the "Play audio"
+        # default, also loads the matching segment and starts it playing on the
+        # device that clicked (see _attach_embedding_autoplay — the playback
+        # trigger is client side, never broadcast from the server). Anyone
+        # browsing in a quiet room can switch that off here; the "Play audio"
         # button and the player's own controls keep working either way.
         autoplay_select = pn.widgets.RadioBoxGroup(
             name="Audio on click",
             options={"play segment": True, "stay silent": False},
             value=True,
             inline=True,
+            sizing_mode="stretch_width",
         )
         self.autoplay_select[widget_idx] = autoplay_select
-        autoplay_setting = pn.Row(
+        # When enabled, clicking an embedding point also starts playback on the
+        # device that clicked (per-client; see _attach_embedding_autoplay).
+        _attach_embedding_autoplay(
+            self.interactive_embed_plot.get(widget_idx),
+            audio_player,
+            autoplay_select,
+        )
+        # On a phone this label + radio pair stacks vertically instead of
+        # sitting side by side, so the "Audio on click:" text never overlaps
+        # the radio buttons.
+        autoplay_setting = _mobile_stack_row(
             pn.pane.Markdown(
                 "**Audio on click:**",
                 margin=(0, 5, 0, 10),
@@ -773,12 +863,13 @@ class DashBoard(DashBoardHelper):
                     "then press play."
                 )
                 return
-            # Starts playback on browsers that allow it after the visitor has
-            # interacted with the page (desktop, Android). Where it is refused
-            # (iOS only starts playback from inside the tap handler itself) the
-            # player below the buttons is now visible and can be used directly,
-            # and the js_on_click callback plays it on the next tap.
-            audio_player.paused = False
+            # Playback itself is started client side by this button's
+            # ``js_on_click`` (a real user gesture, which is what mobile
+            # browsers require). We intentionally do NOT set
+            # ``audio_player.paused`` here: the dashboard shares one bokeh
+            # session between every visitor, so a server-side unpause would
+            # start sound on every connected device, not just the one that
+            # tapped the button.
 
         play_audio_button = pn.widgets.Button(
             name="Play audio", button_type="primary"
@@ -821,7 +912,7 @@ class DashBoard(DashBoardHelper):
                 embedding_info_dialogue,
                 self.spectrogram_plot_panel[widget_idx],
                 save_selection_dialogue,
-                pn.Row(play_audio_button, save_selection_button),
+                _mobile_stack_row(play_audio_button, save_selection_button),
                 autoplay_setting,
                 audio_player,
             ),
@@ -1521,11 +1612,13 @@ def visualize_using_dashboard(
         Dictionary with parameters for dashboard creation
     """
     # Server options that must NOT flow into the per-session dashboard kwargs.
-    # Tuned for the website: the document-build token stays valid for an hour
-    # (slow builds on big datasets no longer die with "Token is expired") and
-    # sessions are kept alive for 12h so pre-warmed sessions stay reusable.
+    # Tuned for the website: keep the bokeh session token valid for 24h (the
+    # token is re-sent on every websocket reconnect, so it must outlive the
+    # 12h session lifetime — a 1h token caused recurring "Token is expired"
+    # errors for visitors who kept the dashboard open) and keep sessions alive
+    # for 12h so pre-warmed sessions stay reusable.
     server_options = {
-        "session_token_expiration": kwargs.pop("session_token_expiration", 3600),
+        "session_token_expiration": kwargs.pop("session_token_expiration", 24 * 60 * 60),
         "unused_session_lifetime_milliseconds": kwargs.pop(
             "unused_session_lifetime_milliseconds", 12 * 60 * 60 * 1000
         ),

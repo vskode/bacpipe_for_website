@@ -1353,6 +1353,10 @@ def plot_embeddings_px(
 
     fig.update_layout(
         # autosize=True,
+        # Explicitly off: Panel's Plotly view relayouts the figure to the pane
+        # width itself; Plotly's own autosize fights that and makes the plot
+        # oscillate in width (the "shaking" figure).
+        autosize=False,
         uirevision=True,
         scene=dict(uirevision=True),
         template="plotly_white",
