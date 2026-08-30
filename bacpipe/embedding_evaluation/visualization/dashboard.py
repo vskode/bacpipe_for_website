@@ -431,7 +431,12 @@ _EMBEDDING_PLAY_ON_CLICK_JS = """
 // and selection too, so ignore everything but a click on a real point.
 const evt = cb_obj && cb_obj.data;
 if (!evt || evt.type !== "click") { return; }
-if (!autoplay.value) { return; }
+// ``autoplay`` here is the bokeh RadioButtonGroup model backing the
+// "Audio on click" RadioBoxGroup. Panel maps the widget's ``value``
+// (True/False) onto the bokeh model's ``active`` index, so ``autoplay.value``
+// does not exist in the browser and is always undefined (which silently
+// disabled autoplay entirely). Index 0 == "play segment", 1 == "stay silent".
+if (autoplay.active !== 0) { return; }
 const points = evt.data && evt.data.points;
 if (!points || !points.length) { return; }
 
