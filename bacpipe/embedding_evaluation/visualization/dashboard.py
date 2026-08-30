@@ -1,3 +1,4 @@
+import json
 import panel as pn
 import matplotlib
 import sys
@@ -131,6 +132,18 @@ _MOBILE_LAST_CSS = f"""
 }}
 """
 
+# Applied to the single-model sidebar on phones so its widgets join the page's
+# single flex column (instead of staying trapped inside the sidebar box). That
+# is what lets ``order`` move the Model + Label-by selectors *above* the plots
+# while the rest of the sidebar drops to the bottom.
+_MOBILE_DISPLAY_CONTENTS_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    display: contents !important;
+  }}
+}}
+"""
+
 # Attached to *every* component: neutralises fixed pixel widths so nothing can
 # be wider than the phone screen, and lets flex children actually shrink
 # (``min-width: 0`` — flex items default to ``min-width: auto``, which is the
@@ -203,7 +216,12 @@ _MOBILE_WIDGET_CSS = f"""
     flex-shrink: 1 !important;
     box-sizing: border-box !important;
   }}
-  select, input, textarea, .bk-input {{
+  /* Radio and checkbox inputs keep their native ~13px size: stretching them to
+     100% width made the label text overlap the actual button. */
+  select,
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  .bk-input:not([type="checkbox"]):not([type="radio"]) {{
     width: 100% !important;
     font-size: 16px !important;
     min-height: 40px !important;
@@ -356,6 +374,28 @@ def _mobile_move_last(obj):
     return obj
 
 
+def _mobile_order(obj, order):
+    """Give ``obj`` an explicit flex ``order`` on phones.
+
+    Used together with ``_MOBILE_DISPLAY_CONTENTS_CSS`` to interleave the
+    Model + Label-by selectors with the plots on narrow screens (selectors
+    above the embedding plot, rest of the sidebar below). Returns ``obj`` so it
+    can be used inline.
+    """
+    _add_stylesheet(obj, _mobile_order_css(order))
+    return obj
+
+
+def _mobile_order_css(order):
+    return f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    order: {order} !important;
+  }}
+}}
+"""
+
+
 def _iter_components(obj, seen=None):
     """Yield ``obj`` and every nested component, depth first.
 
@@ -413,6 +453,38 @@ def apply_mobile_styles(root):
             _add_stylesheet(obj, _MOBILE_WIDGET_CSS)
         else:
             _add_stylesheet(obj, _MOBILE_FLUID_CSS)
+
+
+# Responsive plot heights. Plotly figures declare their height in the figure
+# layout itself (embedding 700px, spectrogram 550px), and a CSS ``height``
+# clamp only shrinks the wrapper while the canvas spills out — so the height is
+# changed by writing the bokeh ``height`` property of the pane instead. Bokeh
+# then resizes the pane *and* its inner Plotly container together, and
+# ``autosize=True`` makes the figure follow the container. Runs on
+# ``document_ready`` (registered once per session by
+# ``DashBoard._install_responsive_height_js``) and on every window resize.
+_RESPONSIVE_PLOT_HEIGHT_JS = """
+const BREAKPOINT = %(breakpoint)d;
+const PLOTS = %(plots)s;
+function applyResponsiveHeights() {
+  const narrow = window.innerWidth <= BREAKPOINT;
+  const docs = (typeof Bokeh !== 'undefined') ? Bokeh.documents : [];
+  for (const doc of docs) {
+    for (const entry of PLOTS) {
+      const name = entry[0];
+      const desktop = entry[1];
+      const mobile = entry[2];
+      let model = null;
+      try { model = doc.get_model_by_name(name); } catch (e) { /* duplicate name */ }
+      if (model != null) {
+        model.height = narrow ? mobile : desktop;
+      }
+    }
+  }
+}
+applyResponsiveHeights();
+window.addEventListener('resize', applyResponsiveHeights);
+"""
 
 
 _EMBEDDING_PLAY_ON_CLICK_JS = """
@@ -634,6 +706,11 @@ class DashBoard(DashBoardHelper):
         self.heatmap_plot = dict()
         self.kwargs = kwargs
 
+        # Plotly panes registered for mobile half-height (see
+        # ``_make_plot_height_responsive``): list of
+        # ``(bokeh_model_name, desktop_height, mobile_height)``.
+        self._responsive_plots = []
+
     @staticmethod
     def get_audio_dir():
         """
@@ -655,6 +732,57 @@ class DashBoard(DashBoardHelper):
             )
             return "../public/assets/audio/" + clean_string
         return bacpipe.config.audio_dir
+
+    def _make_plot_height_responsive(self, plot_pane, desktop_height):
+        """Give a Plotly pane ~half height on phones (client side).
+
+        The pane keeps its fixed desktop ``height`` (which reserves the vertical
+        space that stops the accordion collapsing); on phones a
+        ``document_ready`` JS callback overwrites the bokeh ``height`` property
+        so Bokeh resizes the pane and its Plotly container together (see
+        ``_RESPONSIVE_PLOT_HEIGHT_JS``). Pure CSS can't do this — shrinking the
+        wrapper alone lets the Plotly canvas spill over the widgets below.
+        """
+        if not desktop_height:
+            return
+        desktop = int(desktop_height)
+        name = f"responsive-plot-{len(self._responsive_plots)}"
+        plot_pane.name = name
+        self._responsive_plots.append((name, desktop, desktop // 2))
+
+    def _install_responsive_height_js(self):
+        """Register this session's responsive plot-height callback."""
+        if not self._responsive_plots:
+            return
+        from bokeh.models import CustomJS
+
+        code = _RESPONSIVE_PLOT_HEIGHT_JS % {
+            "breakpoint": MOBILE_BREAKPOINT,
+            "plots": json.dumps(self._responsive_plots),
+        }
+        pn.state.curdoc.js_on_event("document_ready", CustomJS(code=code))
+
+    def _style_reorderable_sidebar(self, sidebar, widget_idx):
+        """Move Model + Label-by above the plots on phones.
+
+        The sidebar is dissolved with ``display: contents`` so its widgets join
+        the page's single flex column, then the Model and Label-by selectors are
+        ordered before ``main_content`` (order 3, set in ``model_page``) and the
+        remaining widgets are pushed to the bottom. The desktop layout is
+        untouched: the media queries below do not match on wide screens.
+        """
+        _add_stylesheet(sidebar, _MOBILE_DISPLAY_CONTENTS_CSS)
+        model_widget = self.model_select[widget_idx]
+        label_widget = self.label_select[widget_idx]
+        for child in sidebar.objects:
+            if child is None:
+                continue
+            if child is model_widget:
+                _mobile_order(child, 1)
+            elif child is label_widget:
+                _mobile_order(child, 2)
+            else:
+                _mobile_move_last(child)
 
     def embedding_panel(self, widget_idx=0):
         """
@@ -692,6 +820,10 @@ class DashBoard(DashBoardHelper):
         else:
 
             self.init_interactive_embed_plot(widget_idx)
+            self._make_plot_height_responsive(
+                self.interactive_embed_plot[widget_idx],
+                bacpipe.settings.embed_fig_height,
+            )
 
             # Callback to update plot when any selector changes, while preserving accordion state.
             def update_plot_on_change(event):
@@ -788,6 +920,11 @@ class DashBoard(DashBoardHelper):
             # it installs a second ResizeObserver that fights the pane the same
             # way.
             sizing_mode="stretch_width",
+        )
+        self._make_plot_height_responsive(
+            self.spectrogram_plot_panel[widget_idx],
+            self.kwargs.get("spectrogram_plot_height")
+            or bacpipe.settings.spectrogram_plot_height,
         )
 
         embedding_info_dialogue = pn.widgets.StaticText(
@@ -1023,6 +1160,11 @@ class DashBoard(DashBoardHelper):
             row containing the sidebar and the model content
         """
         sidebar = self.make_sidebar(widget_idx, model=True)
+        if single_model:
+            # On phones the Model + Label-by selectors move above the embedding
+            # plot and the rest of the sidebar moves below it (see
+            # ``_style_reorderable_sidebar``). On desktop nothing changes.
+            self._style_reorderable_sidebar(sidebar, widget_idx)
         title_string = "Model Dashboard for {}".format
         accordion_title = pn.bind(title_string, self.model_select[widget_idx])
         if single_model:
@@ -1067,8 +1209,19 @@ class DashBoard(DashBoardHelper):
             sizing_mode="stretch_width",
         )
 
-        # Side by side on desktop. On a phone the plots come first and the
-        # settings (plus the logo and contact block) sit at the bottom.
+        # Side by side on desktop. On a phone the Model + Label-by selectors sit
+        # above the plots, then the plots, then the rest of the sidebar at the
+        # bottom (``_style_reorderable_sidebar`` gives the sidebar
+        # ``display: contents`` and orders its children).
+        if single_model:
+            return _mobile_stack_row(
+                sidebar,
+                _mobile_order(main_content, 3),
+                sizing_mode="stretch_width",
+            )
+
+        # Two-models pages keep the simpler behaviour: plots first, then the
+        # whole settings sidebar at the bottom.
         return _mobile_stack_row(
             _mobile_move_last(sidebar),
             main_content,
@@ -1536,6 +1689,9 @@ class DashBoard(DashBoardHelper):
         # dashboard fits the width of a phone instead of scrolling sideways.
         apply_mobile_styles(self.app)
 
+        # Halve the embedding + spectrogram plots on phones (client side).
+        self._install_responsive_height_js()
+
     def add_styling(self, *pages):
         """
         Add the logo, contact info, and close button to each page sidebar.
@@ -1554,11 +1710,15 @@ class DashBoard(DashBoardHelper):
         for page in pages:
             sidebar = page.objects[0]
             # Add logo to the sidebar
-            sidebar.append(pn.pane.PNG(logo_path, sizing_mode="scale_width"))
+            sidebar.append(
+                _mobile_move_last(
+                    pn.pane.PNG(logo_path, sizing_mode="scale_width")
+                )
+            )
 
             # Add a spacer + contact info below the logo
-            sidebar.append(pn.Spacer(height=20))
-            sidebar.append(pn.pane.Markdown("""
+            sidebar.append(_mobile_move_last(pn.Spacer(height=20)))
+            sidebar.append(_mobile_move_last(pn.pane.Markdown("""
                     **Contact**
                     
                     If you run into problems, please raise issues on github
@@ -1568,7 +1728,7 @@ class DashBoard(DashBoardHelper):
                     🌍 [github](https://github.com/bioacoustic-ai/bacpipe)  
                     
                     To stay updated with new releases, subscribe to the [newsletter](https://buttondown.com/vskode)
-                    """))
+                    """)))
             # Add close button to the header
             close_button = pn.widgets.Button(name="❌ close dashboard")
 
@@ -1586,7 +1746,7 @@ class DashBoard(DashBoardHelper):
 
             close_button.on_click(shutdown_callback)
 
-            sidebar.append(close_button)
+            sidebar.append(_mobile_move_last(close_button))
 
 
 def visualize_using_dashboard(
