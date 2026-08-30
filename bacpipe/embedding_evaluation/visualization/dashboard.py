@@ -463,6 +463,14 @@ def apply_mobile_styles(root):
 # ``autosize=True`` makes the figure follow the container. Runs on
 # ``document_ready`` (registered once per session by
 # ``DashBoard._install_responsive_height_js``) and on every window resize.
+#
+# The panes are identified by a unique ``css_classes`` marker
+# (``responsive-plot-N``) rather than the bokeh model ``name``: Panel's pane
+# ``name`` is a *constant* parameter, so it cannot be set after the pane is
+# created (``pane.name = ...`` raises ``TypeError: Constant parameter 'name'
+# cannot be modified``). ``css_classes`` is a normal, settable parameter that
+# Panel syncs to the bokeh model, so the JS finds each model by scanning
+# ``doc._all_models`` for the marker class.
 _RESPONSIVE_PLOT_HEIGHT_JS = """
 const BREAKPOINT = %(breakpoint)d;
 const PLOTS = %(plots)s;
@@ -470,14 +478,20 @@ function applyResponsiveHeights() {
   const narrow = window.innerWidth <= BREAKPOINT;
   const docs = (typeof Bokeh !== 'undefined') ? Bokeh.documents : [];
   for (const doc of docs) {
-    for (const entry of PLOTS) {
-      const name = entry[0];
-      const desktop = entry[1];
-      const mobile = entry[2];
-      let model = null;
-      try { model = doc.get_model_by_name(name); } catch (e) { /* duplicate name */ }
-      if (model != null) {
-        model.height = narrow ? mobile : desktop;
+    const all = (doc && doc._all_models) || [];
+    // In bokeh 3.x ``Document._all_models`` is a Map<string, Model>, so iterate
+    // its values (a plain ``for (const m of doc._all_models)`` would yield
+    // [id, model] pairs, never matching the css_classes check).
+    const models = (typeof all.values === 'function') ? all.values() : all;
+    for (const model of models) {
+      if (!model || !model.css_classes || !model.css_classes.length) { continue; }
+      for (const entry of PLOTS) {
+        const marker = entry[0];
+        const desktop = entry[1];
+        const mobile = entry[2];
+        if (model.css_classes.indexOf(marker) !== -1) {
+          model.height = narrow ? mobile : desktop;
+        }
       }
     }
   }
@@ -742,13 +756,20 @@ class DashBoard(DashBoardHelper):
         so Bokeh resizes the pane and its Plotly container together (see
         ``_RESPONSIVE_PLOT_HEIGHT_JS``). Pure CSS can't do this — shrinking the
         wrapper alone lets the Plotly canvas spill over the widgets below.
+
+        The pane is tagged with a unique ``css_classes`` marker that the JS
+        uses to find its bokeh model. Panel's ``name`` param cannot be used
+        here: it is a constant parameter, so assigning ``plot_pane.name``
+        raises ``TypeError: Constant parameter 'name' cannot be modified``.
         """
         if not desktop_height:
             return
         desktop = int(desktop_height)
-        name = f"responsive-plot-{len(self._responsive_plots)}"
-        plot_pane.name = name
-        self._responsive_plots.append((name, desktop, desktop // 2))
+        marker = f"responsive-plot-{len(self._responsive_plots)}"
+        existing = list(plot_pane.css_classes or [])
+        if marker not in existing:
+            plot_pane.css_classes = [*existing, marker]
+        self._responsive_plots.append((marker, desktop, desktop // 2))
 
     def _install_responsive_height_js(self):
         """Register this session's responsive plot-height callback."""
