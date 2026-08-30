@@ -55,15 +55,16 @@ audio_dir = DashBoard.get_audio_dir()
 
 
 def start_prewarm(port=5006):
-    """Warm a dashboard session for every available dataset at startup.
+    """Warm up a dashboard session for every available dataset at startup.
 
-    The website embeds the dashboard in an iframe and reuses the *exact*
-    session id (``bokeh-session-id=dash-<dataset>``) the pre-warm created.
-    Bokeh builds a session's document synchronously while handling the first
-    request for that session id, so when this function's GET returns, the
-    dashboard for that dataset is fully built and cached in memory. The first
-    (and every later) visitor for each dataset therefore gets an already-built
-    dashboard instead of waiting minutes for it to be constructed.
+    This is a smoke test and an OS-cache warm-up, not the session visitors
+    use: ``dashboard.html`` gives every device its own session id
+    (``dash-<dataset>-<deviceId>``), so audio/player state is never shared
+    between visitors. The pre-warm builds ``dash-<dataset>-warm`` once per
+    dataset — that read pulls the dataset files into the OS page cache, so the
+    first per-device build of each dashboard is fast (~2s instead of waiting on
+    cold disk I/O). It also fails loudly at deploy time if a dataset no longer
+    builds.
 
     Sessions are re-opened every 4h to keep them alive: bokeh expires sessions
     that are not re-accessed within ``unused_session_lifetime_milliseconds``
@@ -149,7 +150,9 @@ def start_prewarm(port=5006):
         return False
 
     def _warm(name):
-        session_id = f"dash-{name}"
+        # Distinct from the per-device sessions the website uses, so nothing a
+        # visitor ever attaches to is touched by the pre-warm cycle.
+        session_id = f"dash-{name}-warm"
         url = (
             f"http://127.0.0.1:{port}/"
             f"?audio_dir={urllib.parse.quote(name)}"

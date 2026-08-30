@@ -188,14 +188,17 @@ class DashBoardHelper:
         # Create Plotly pane with dummy figure and reserved height to prevent accordion collapse
         self.interactive_embed_plot[widget_idx] = pn.pane.Plotly(
             SpectrogramPlot.dummy_image(title="Loading..."),
-            sizing_mode="stretch_width",
             height=settings.embed_fig_height,
-            # No ``config={"responsive": True}``: Panel relayouts the figure to
-            # the pane width on every layout pass, while plotly's responsive
-            # ResizeObserver would recompute it from the container at the same
-            # time. Both fired in turn and the embedding plot kept resizing
-            # itself (visible as a permanently shaking plot). See the note in
-            # ``dashboard.spectrogram_panel``.
+            # Responsive width + fixed height, with the figure on
+            # ``autosize=True`` (full explanation in
+            # ``dashboard.spectrogram_panel``). The old
+            # ``sizing_mode="stretch_width"`` + ``autosize=False`` combo made
+            # Panel relayout the figure on every layout pass and the plot
+            # oscillated in width (permanently shaking); ``autosize=True``
+            # breaks that loop. Do *not* use ``styles={"display": "contents"}``
+            # here: it drops the pane's box so the plot overlaps whatever is
+            # below it.
+            sizing_mode="stretch_width",
         )
 
         # Add event handlers
@@ -411,8 +414,14 @@ class DashBoardHelper:
             fig_panel = pn.panel(plot_func(**kwargs))
 
         # Make the plot fill the available container width so the dashboard
-        # stays responsive when the browser window is resized.
-        fig_panel.sizing_mode = "stretch_width"
+        # stays responsive when the browser window is resized. Plotly panes are
+        # deliberately skipped: with ``sizing_mode="stretch_width"`` Panel's
+        # Plotly view relayouts the figure on every layout pass, which feeds
+        # back into Bokeh's layout and makes the plot oscillate in width (the
+        # "shivering" dashboard). Plotly panes stay on the default sizing mode
+        # so Plotly sizes itself (see ``dashboard.spectrogram_panel``).
+        if not isinstance(fig_panel, pn.pane.Plotly):
+            fig_panel.sizing_mode = "stretch_width"
 
         def save_figure(event):
             """

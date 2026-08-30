@@ -91,7 +91,11 @@ class SpectrogramPlot:
         # initial dummy figure, as a placeholder
         fig = px.imshow(np.zeros((100, 100, 3), dtype=np.uint8))
         fig.update_layout(
-            autosize=False,
+            # autosize must stay True: with autosize=False Panel's Plotly view
+            # relayouts the figure to the pane width on every layout pass, which
+            # feeds back into Bokeh's own layout and makes the plot oscillate in
+            # width (the "shivering" dashboard).
+            autosize=True,
             title=title,
             margin=dict(l=20, r=20, t=40, b=20),
             height=settings.spectrogram_plot_height,
@@ -227,7 +231,9 @@ class SpectrogramPlot:
             color_continuous_scale=self.kwargs.get("spec_colorscale"),
         )
         fig.update_layout(
-            autosize=False,
+            # See the autosize note in ``dummy_image``: autosize=False makes
+            # Panel's Plotly view fight Bokeh's layout and the plot oscillates.
+            autosize=True,
             height=self.kwargs.get("spectrogram_plot_height"),
             margin=dict(l=20, r=20, t=20, b=20),
         )

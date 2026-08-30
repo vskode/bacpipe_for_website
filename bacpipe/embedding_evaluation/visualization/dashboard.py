@@ -418,11 +418,13 @@ def apply_mobile_styles(root):
 _EMBEDDING_PLAY_ON_CLICK_JS = """
 // Play the clicked segment on *this* device only.
 //
-// The dashboard pins every visitor to the same pre-warmed bokeh session
-// (``dash-<dataset>``), so a server-side playback trigger would broadcast to
-// every connected browser. This callback runs client side on the
-// ``plotly_event`` instead, so only the browser that actually clicked a point
-// unpauses the shared <audio> element.
+// The dashboard gives every device its own bokeh session
+// (``dash-<dataset>-<deviceId>``, see dashboard.html), so a server-side
+// playback trigger would only reach this device anyway. Playback still has to
+// start client side: a websocket round-trip does not count as a browser
+// gesture, which mobile browsers require before <audio> can play. So this
+// callback runs on the ``plotly_event`` in the browser that actually clicked
+// a point, and only that browser unpauses its own <audio> element.
 //
 // ``cb_obj`` is the PlotlyEvent and ``cb_obj.data`` is
 // ``{type: "click", data: {points: [...]}}``. The same event fires for hover
@@ -465,8 +467,9 @@ def _attach_embedding_autoplay(plot_pane, audio_player, autoplay_select):
     The embedding plot is a ``pn.pane.Plotly`` whose bokeh model emits a
     client-side ``plotly_event`` for every plotly interaction. A JS callback
     attached to that event runs in the browser that made the gesture, so
-    unpausing the shared audio player only ever affects that device (keeping
-    playback per-client even though every visitor shares one bokeh session).
+    unpausing the audio player only ever affects that device. (Each device now
+    has its own bokeh session too, but the gesture requirement stays: a
+    websocket round-trip does not count as a user gesture on mobile.)
     """
 
     def _on_load():
@@ -766,17 +769,20 @@ class DashBoard(DashBoardHelper):
         """
         self.spectrogram_plot_panel[widget_idx] = pn.pane.Plotly(
             SpectrogramPlot.dummy_image(title=""),
-            sizing_mode="stretch_width",
             height=self.kwargs.get("spectrogram_plot_height"),
-            # NOTE: do *not* pass ``config={"responsive": True}`` here.
-            # Panel's Plotly view already resizes the figure on every layout
-            # pass (``after_layout`` -> ``Plotly.relayout({width, height})``
-            # using the pane's ``clientWidth``), so the pane follows the
-            # container on phones by itself. Plotly's own ``responsive`` option
-            # additionally installs a ResizeObserver that recomputes the size
-            # from the container and drops the width Panel just set — the two
-            # then keep correcting each other and the plot visibly shakes,
-            # growing and shrinking without ever settling.
+            # Responsive width + fixed height, with the figure on
+            # ``autosize=True``. Panel's Plotly view relayouts the figure to the
+            # pane's clientWidth on every layout pass (``after_layout`` ->
+            # ``Plotly.relayout({width, height})``); with ``autosize=True`` that
+            # relayout is a no-op for the rendered size, so Bokeh's layout does
+            # not feed back into itself and the plot does not oscillate (the old
+            # ``autosize=False`` + ``stretch_width`` combo "shivered").
+            # Do *not* use ``styles={"display": "contents"}`` here: it removes
+            # the pane's own box so the plot overflows into the accordions and
+            # buttons below. And do *not* pass ``config={"responsive": True}``:
+            # it installs a second ResizeObserver that fights the pane the same
+            # way.
+            sizing_mode="stretch_width",
         )
 
         embedding_info_dialogue = pn.widgets.StaticText(
@@ -808,14 +814,15 @@ class DashBoard(DashBoardHelper):
             name="Audio playback",
             visible=False,
             sizing_mode="stretch_width",
-            # Deliberately NOT autoplay. The website pins every visitor to the
-            # same pre-warmed bokeh session (``dash-<dataset>``), so any
-            # server-side playback trigger — ``autoplay=True`` on the pane, or
-            # setting ``paused=False`` — is broadcast to *every* connected
-            # browser. A click on one device would then start sound on another.
-            # Playback is instead always started by the visitor's own tap (the
-            # "Play audio" button or the native <audio> controls), which only
-            # ever affects the device that made the gesture.
+            # Deliberately NOT autoplay. Each device now has its own bokeh
+            # session (``dash-<dataset>-<deviceId>``), so nothing is broadcast
+            # between visitors anymore — but ``autoplay=True`` or a server-side
+            # ``paused=False`` still would not start playback: mobile browsers
+            # only allow audio that is triggered by a real user gesture, and a
+            # websocket round-trip does not count as one. Playback is therefore
+            # always started by the visitor's own tap (the "Play audio" button
+            # or the native <audio> controls), which only ever affects the
+            # device that made the gesture.
             autoplay=False,
         )
         self.spec_plot_obj[widget_idx].audio_player = audio_player
@@ -866,10 +873,8 @@ class DashBoard(DashBoardHelper):
             # Playback itself is started client side by this button's
             # ``js_on_click`` (a real user gesture, which is what mobile
             # browsers require). We intentionally do NOT set
-            # ``audio_player.paused`` here: the dashboard shares one bokeh
-            # session between every visitor, so a server-side unpause would
-            # start sound on every connected device, not just the one that
-            # tapped the button.
+            # ``audio_player.paused`` here: a server-side unpause would not
+            # count as a user gesture, so mobile browsers would still block it.
 
         play_audio_button = pn.widgets.Button(
             name="Play audio", button_type="primary"
@@ -1616,7 +1621,8 @@ def visualize_using_dashboard(
     # token is re-sent on every websocket reconnect, so it must outlive the
     # 12h session lifetime — a 1h token caused recurring "Token is expired"
     # errors for visitors who kept the dashboard open) and keep sessions alive
-    # for 12h so pre-warmed sessions stay reusable.
+    # for 12h so warm sessions stay reusable and a visitor's own session does
+    # not disappear mid-browse.
     server_options = {
         "session_token_expiration": kwargs.pop("session_token_expiration", 24 * 60 * 60),
         "unused_session_lifetime_milliseconds": kwargs.pop(

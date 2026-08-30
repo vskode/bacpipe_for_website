@@ -1352,11 +1352,12 @@ def plot_embeddings_px(
         )
 
     fig.update_layout(
-        # autosize=True,
-        # Explicitly off: Panel's Plotly view relayouts the figure to the pane
-        # width itself; Plotly's own autosize fights that and makes the plot
-        # oscillate in width (the "shaking" figure).
-        autosize=False,
+        # autosize must stay True: Panel's Plotly view relayouts the figure to
+        # the pane width on every layout pass, and with autosize off that
+        # relayout feeds back into Bokeh's layout and the plot oscillates in
+        # width (the "shivering" dashboard). With autosize on the relayout is a
+        # no-op for the rendered size, so nothing fights.
+        autosize=True,
         uirevision=True,
         scene=dict(uirevision=True),
         template="plotly_white",
