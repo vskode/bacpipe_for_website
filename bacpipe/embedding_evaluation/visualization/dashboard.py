@@ -458,9 +458,7 @@ def apply_mobile_styles(root):
 # Responsive plot heights. Plotly figures declare their height in the figure
 # layout itself (embedding 700px, spectrogram 550px), and a CSS ``height``
 # clamp only shrinks the wrapper while the canvas spills out — so the height is
-# changed by writing the bokeh ``height`` property of the pane instead. Bokeh
-# then resizes the pane *and* its inner Plotly container together, and
-# ``autosize=True`` makes the figure follow the container. Runs on
+# changed by writing the bokeh ``height`` property of the pane instead. Runs on
 # ``document_ready`` (registered once per session by
 # ``DashBoard._install_responsive_height_js``) and on every window resize.
 #
@@ -471,9 +469,28 @@ def apply_mobile_styles(root):
 # cannot be modified``). ``css_classes`` is a normal, settable parameter that
 # Panel syncs to the bokeh model, so the JS finds each model by scanning
 # ``doc._all_models`` for the marker class.
+#
+# Writing ``model.height`` alone is not enough on a phone: Panel's Plotly view
+# sets its inner Plotly container's height from ``model.height`` *once*, at
+# render time, and does not keep it in sync when ``model.height`` changes
+# later. With the figure on ``autosize=True`` the rendered plot follows that
+# container, so the plot would stay at the desktop height and overflow its
+# pane. We therefore also resize the container (and ask Plotly to re-run its
+# auto-size) for every marked pane.
 _RESPONSIVE_PLOT_HEIGHT_JS = """
 const BREAKPOINT = %(breakpoint)d;
 const PLOTS = %(plots)s;
+function deepQueryAll(sel, root) {
+  const out = [];
+  (function walk(node) {
+    const list = node.querySelectorAll ? node.querySelectorAll('*') : [];
+    for (const el of list) {
+      if (el.matches && el.matches(sel)) { out.push(el); }
+      if (el.shadowRoot) { walk(el.shadowRoot); }
+    }
+  })(root);
+  return out;
+}
 function applyResponsiveHeights() {
   const narrow = window.innerWidth <= BREAKPOINT;
   const docs = (typeof Bokeh !== 'undefined') ? Bokeh.documents : [];
@@ -495,9 +512,31 @@ function applyResponsiveHeights() {
       }
     }
   }
+  // Resize the rendered Plotly containers too (see the note above the JS).
+  for (const entry of PLOTS) {
+    const marker = entry[0];
+    const desktop = entry[1];
+    const mobile = entry[2];
+    const target = narrow ? mobile : desktop;
+    for (const el of deepQueryAll('.' + marker, document)) {
+      const container = el.shadowRoot && el.shadowRoot.querySelector('.js-plotly-plot');
+      if (!container) { continue; }
+      container.style.height = target + 'px';
+      if (typeof Plotly !== 'undefined') {
+        try { Plotly.Plots.resize(container); } catch (e) {}
+      }
+    }
+  }
 }
 applyResponsiveHeights();
 window.addEventListener('resize', applyResponsiveHeights);
+// The Plotly container is appended to the pane's shadow root asynchronously
+// (after ``Plotly.newPlot`` resolves), which can happen after ``document_ready``
+// has already fired. Re-run a few times as the DOM settles so a phone never
+// shows the desktop-height plot.
+for (const delay of [0, 100, 300, 1000, 2500, 5000]) {
+  setTimeout(applyResponsiveHeights, delay);
+}
 """
 
 
@@ -527,20 +566,41 @@ const points = evt.data && evt.data.points;
 if (!points || !points.length) { return; }
 
 // The server loads the clicked segment in response to this same click and
-// pushes the new source to the shared player a moment later. Wait until the
-// player value actually changes, then start playback on this device.
-const before = player.value;
-const started = Date.now();
-const timer = setInterval(() => {
-  const value = player.value || "";
-  if (value.length > 100 && value !== before) {
-    player.time = 0;
-    player.paused = false;
-    clearInterval(timer);
-  } else if (Date.now() - started > 8000) {
-    clearInterval(timer);
-  }
-}, 40);
+// pushes the new source to the player a moment later. Wait until the player
+// value changes, then start playback on this device.
+//
+// One shared timer per player counts how many distinct values are still
+// expected and plays each one as it arrives. A fresh ``setInterval`` per click
+// (with ``before`` captured at click time) used to race: clicking a second
+// point before the first segment had arrived left several timers polling the
+// same value, so only the first one ever played and later clicks' audio was
+// silently dropped.
+if (player._bacpipeTimer == null) {
+  player._bacpipeWanted = 0;
+  player._bacpipeLastPlayed = player.value || "";
+  player._bacpipeLastClick = Date.now();
+  player._bacpipeTimer = setInterval(() => {
+    const value = player.value || "";
+    if (
+      player._bacpipeWanted > 0 &&
+      value.length > 100 &&
+      value !== player._bacpipeLastPlayed
+    ) {
+      player.time = 0;
+      player.paused = false;
+      player._bacpipeLastPlayed = value;
+      player._bacpipeWanted -= 1;
+      player._bacpipeLastClick = Date.now();
+    } else if (Date.now() - player._bacpipeLastClick > 10000) {
+      // No clicks for a while: stop polling (re-created on the next click).
+      clearInterval(player._bacpipeTimer);
+      player._bacpipeTimer = null;
+      player._bacpipeWanted = 0;
+    }
+  }, 40);
+}
+player._bacpipeWanted += 1;
+player._bacpipeLastClick = Date.now();
 """
 
 
