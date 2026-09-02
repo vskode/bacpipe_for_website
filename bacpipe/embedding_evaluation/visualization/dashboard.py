@@ -528,6 +528,7 @@ function applyResponsiveHeights() {
     }
   }
 }
+window.applyResponsiveHeights = applyResponsiveHeights;
 applyResponsiveHeights();
 window.addEventListener('resize', applyResponsiveHeights);
 // The Plotly container is appended to the pane's shadow root asynchronously
@@ -842,6 +843,31 @@ class DashBoard(DashBoardHelper):
             "plots": json.dumps(self._responsive_plots),
         }
         pn.state.curdoc.js_on_event("document_ready", CustomJS(code=code))
+
+        # Panel renders ``pn.Tabs(..., dynamic=True)`` lazily: the bokeh models
+        # for the inactive tabs (Two models / All models / predictions) only
+        # exist once a tab is first activated, so the ``document_ready`` pass
+        # above never sees them and they stay at desktop height on phones. When
+        # the active tab changes, re-apply the heights once the freshly built
+        # Plotly panes have rendered.
+        def _on_load():
+            tabs_model = _first_model(self.app)
+            if tabs_model is None:
+                return
+            tabs_model.js_on_change(
+                "active",
+                CustomJS(
+                    code=(
+                        "for (const delay of [0, 50, 200, 500, 1200]) {"
+                        "  setTimeout(() => {"
+                        "    if (window.applyResponsiveHeights) window.applyResponsiveHeights();"
+                        "  }, delay);"
+                        "}"
+                    )
+                ),
+            )
+
+        pn.state.onload(_on_load)
 
     def _style_reorderable_sidebar(self, sidebar, widget_idx):
         """Move Model + Label-by above the plots on phones.
@@ -1598,6 +1624,11 @@ class DashBoard(DashBoardHelper):
                         "label",
                         name="Label by",
                         options=self.label_by,
+                        value=(
+                            "parent_directory"
+                            if "parent_directory" in self.label_by
+                            else (self.label_by[0] if self.label_by else None)
+                        ),
                     ),
                     (
                         pn.widgets.StaticText(
