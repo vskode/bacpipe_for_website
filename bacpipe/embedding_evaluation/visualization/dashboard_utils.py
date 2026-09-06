@@ -199,6 +199,9 @@ class DashBoardHelper:
             # here: it drops the pane's box so the plot overlaps whatever is
             # below it.
             sizing_mode="stretch_width",
+            # See ``dashboard.model_page``: ``min_width=0`` stops the plot's
+            # intrinsic width from blowing up the desktop flex row.
+            min_width=0,
         )
 
         # Add event handlers

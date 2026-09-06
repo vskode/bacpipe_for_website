@@ -1,7 +1,5 @@
-import json
 import panel as pn
 import matplotlib
-import sys
 import seaborn as sns
 import numpy as np
 import logging
@@ -234,6 +232,20 @@ _MOBILE_WIDGET_CSS = f"""
 }}
 """
 
+# The native <audio> controls are redundant on a phone: the "Play audio" button
+# (and the tap-on-point autoplay) already start playback there, and the native
+# bar eats vertical space for a control that is tiny and fiddly to use on
+# touch. Hiding the pane still lets "Play audio" drive the same <audio> element
+# (``display: none`` does not stop an element from playing), so desktop keeps
+# the native controls while phones keep only the button.
+_MOBILE_HIDE_AUDIO_CSS = f"""
+@media (max-width: {MOBILE_BREAKPOINT}px) {{
+  :host {{
+    display: none !important;
+  }}
+}}
+"""
+
 # Chrome of the Bootstrap template itself (header, container, main column).
 # These elements live in the normal document — not in a shadow root — so they
 # are styled through the template's ``raw_css`` instead of ``stylesheets``.
@@ -455,92 +467,6 @@ def apply_mobile_styles(root):
             _add_stylesheet(obj, _MOBILE_FLUID_CSS)
 
 
-# Responsive plot heights. Plotly figures declare their height in the figure
-# layout itself (embedding 700px, spectrogram 550px), and a CSS ``height``
-# clamp only shrinks the wrapper while the canvas spills out — so the height is
-# changed by writing the bokeh ``height`` property of the pane instead. Runs on
-# ``document_ready`` (registered once per session by
-# ``DashBoard._install_responsive_height_js``) and on every window resize.
-#
-# The panes are identified by a unique ``css_classes`` marker
-# (``responsive-plot-N``) rather than the bokeh model ``name``: Panel's pane
-# ``name`` is a *constant* parameter, so it cannot be set after the pane is
-# created (``pane.name = ...`` raises ``TypeError: Constant parameter 'name'
-# cannot be modified``). ``css_classes`` is a normal, settable parameter that
-# Panel syncs to the bokeh model, so the JS finds each model by scanning
-# ``doc._all_models`` for the marker class.
-#
-# Writing ``model.height`` alone is not enough on a phone: Panel's Plotly view
-# sets its inner Plotly container's height from ``model.height`` *once*, at
-# render time, and does not keep it in sync when ``model.height`` changes
-# later. With the figure on ``autosize=True`` the rendered plot follows that
-# container, so the plot would stay at the desktop height and overflow its
-# pane. We therefore also resize the container (and ask Plotly to re-run its
-# auto-size) for every marked pane.
-_RESPONSIVE_PLOT_HEIGHT_JS = """
-const BREAKPOINT = %(breakpoint)d;
-const PLOTS = %(plots)s;
-function deepQueryAll(sel, root) {
-  const out = [];
-  (function walk(node) {
-    const list = node.querySelectorAll ? node.querySelectorAll('*') : [];
-    for (const el of list) {
-      if (el.matches && el.matches(sel)) { out.push(el); }
-      if (el.shadowRoot) { walk(el.shadowRoot); }
-    }
-  })(root);
-  return out;
-}
-function applyResponsiveHeights() {
-  const narrow = window.innerWidth <= BREAKPOINT;
-  const docs = (typeof Bokeh !== 'undefined') ? Bokeh.documents : [];
-  for (const doc of docs) {
-    const all = (doc && doc._all_models) || [];
-    // In bokeh 3.x ``Document._all_models`` is a Map<string, Model>, so iterate
-    // its values (a plain ``for (const m of doc._all_models)`` would yield
-    // [id, model] pairs, never matching the css_classes check).
-    const models = (typeof all.values === 'function') ? all.values() : all;
-    for (const model of models) {
-      if (!model || !model.css_classes || !model.css_classes.length) { continue; }
-      for (const entry of PLOTS) {
-        const marker = entry[0];
-        const desktop = entry[1];
-        const mobile = entry[2];
-        if (model.css_classes.indexOf(marker) !== -1) {
-          model.height = narrow ? mobile : desktop;
-        }
-      }
-    }
-  }
-  // Resize the rendered Plotly containers too (see the note above the JS).
-  for (const entry of PLOTS) {
-    const marker = entry[0];
-    const desktop = entry[1];
-    const mobile = entry[2];
-    const target = narrow ? mobile : desktop;
-    for (const el of deepQueryAll('.' + marker, document)) {
-      const container = el.shadowRoot && el.shadowRoot.querySelector('.js-plotly-plot');
-      if (!container) { continue; }
-      container.style.height = target + 'px';
-      if (typeof Plotly !== 'undefined') {
-        try { Plotly.Plots.resize(container); } catch (e) {}
-      }
-    }
-  }
-}
-window.applyResponsiveHeights = applyResponsiveHeights;
-applyResponsiveHeights();
-window.addEventListener('resize', applyResponsiveHeights);
-// The Plotly container is appended to the pane's shadow root asynchronously
-// (after ``Plotly.newPlot`` resolves), which can happen after ``document_ready``
-// has already fired. Re-run a few times as the DOM settles so a phone never
-// shows the desktop-height plot.
-for (const delay of [0, 100, 300, 1000, 2500, 5000]) {
-  setTimeout(applyResponsiveHeights, delay);
-}
-"""
-
-
 _EMBEDDING_PLAY_ON_CLICK_JS = """
 // Play the clicked segment on *this* device only.
 //
@@ -566,32 +492,39 @@ if (autoplay.active !== 0) { return; }
 const points = evt.data && evt.data.points;
 if (!points || !points.length) { return; }
 
+// Stop whatever is currently playing immediately, so a second tap never has to
+// wait for the first segment to finish before its own audio can start.
+player.paused = true;
+
 // The server loads the clicked segment in response to this same click and
 // pushes the new source to the player a moment later. Wait until the player
 // value changes, then start playback on this device.
 //
 // One shared timer per player counts how many distinct values are still
-// expected and plays each one as it arrives. A fresh ``setInterval`` per click
-// (with ``before`` captured at click time) used to race: clicking a second
-// point before the first segment had arrived left several timers polling the
-// same value, so only the first one ever played and later clicks' audio was
+// expected. Only the *latest* one is played: if a first tap's segment arrives
+// while a second tap is still pending, it is stale and skipped, so the second
+// tap's segment starts immediately instead of first replaying the first one.
+// A fresh ``setInterval`` per click used to race: clicking a second point
+// before the first segment had arrived left several timers polling the same
+// value, so only the first one ever played and later clicks' audio was
 // silently dropped.
 if (player._bacpipeTimer == null) {
   player._bacpipeWanted = 0;
-  player._bacpipeLastPlayed = player.value || "";
+  player._bacpipeLastSeen = player.value || "";
   player._bacpipeLastClick = Date.now();
   player._bacpipeTimer = setInterval(() => {
     const value = player.value || "";
-    if (
-      player._bacpipeWanted > 0 &&
-      value.length > 100 &&
-      value !== player._bacpipeLastPlayed
-    ) {
-      player.time = 0;
-      player.paused = false;
-      player._bacpipeLastPlayed = value;
-      player._bacpipeWanted -= 1;
-      player._bacpipeLastClick = Date.now();
+    const isNew = value.length > 100 && value !== player._bacpipeLastSeen;
+    if (isNew) {
+      player._bacpipeLastSeen = value;
+      if (player._bacpipeWanted > 0) {
+        if (player._bacpipeWanted === 1) {
+          player.time = 0;
+          player.paused = false;
+        }
+        player._bacpipeWanted -= 1;
+        player._bacpipeLastClick = Date.now();
+      }
     } else if (Date.now() - player._bacpipeLastClick > 10000) {
       // No clicks for a while: stop polling (re-created on the next click).
       clearInterval(player._bacpipeTimer);
@@ -781,11 +714,6 @@ class DashBoard(DashBoardHelper):
         self.heatmap_plot = dict()
         self.kwargs = kwargs
 
-        # Plotly panes registered for mobile half-height (see
-        # ``_make_plot_height_responsive``): list of
-        # ``(bokeh_model_name, desktop_height, mobile_height)``.
-        self._responsive_plots = []
-
     @staticmethod
     def get_audio_dir():
         """
@@ -807,67 +735,6 @@ class DashBoard(DashBoardHelper):
             )
             return "../public/assets/audio/" + clean_string
         return bacpipe.config.audio_dir
-
-    def _make_plot_height_responsive(self, plot_pane, desktop_height):
-        """Give a Plotly pane ~half height on phones (client side).
-
-        The pane keeps its fixed desktop ``height`` (which reserves the vertical
-        space that stops the accordion collapsing); on phones a
-        ``document_ready`` JS callback overwrites the bokeh ``height`` property
-        so Bokeh resizes the pane and its Plotly container together (see
-        ``_RESPONSIVE_PLOT_HEIGHT_JS``). Pure CSS can't do this — shrinking the
-        wrapper alone lets the Plotly canvas spill over the widgets below.
-
-        The pane is tagged with a unique ``css_classes`` marker that the JS
-        uses to find its bokeh model. Panel's ``name`` param cannot be used
-        here: it is a constant parameter, so assigning ``plot_pane.name``
-        raises ``TypeError: Constant parameter 'name' cannot be modified``.
-        """
-        if not desktop_height:
-            return
-        desktop = int(desktop_height)
-        marker = f"responsive-plot-{len(self._responsive_plots)}"
-        existing = list(plot_pane.css_classes or [])
-        if marker not in existing:
-            plot_pane.css_classes = [*existing, marker]
-        self._responsive_plots.append((marker, desktop, desktop // 2))
-
-    def _install_responsive_height_js(self):
-        """Register this session's responsive plot-height callback."""
-        if not self._responsive_plots:
-            return
-        from bokeh.models import CustomJS
-
-        code = _RESPONSIVE_PLOT_HEIGHT_JS % {
-            "breakpoint": MOBILE_BREAKPOINT,
-            "plots": json.dumps(self._responsive_plots),
-        }
-        pn.state.curdoc.js_on_event("document_ready", CustomJS(code=code))
-
-        # Panel renders ``pn.Tabs(..., dynamic=True)`` lazily: the bokeh models
-        # for the inactive tabs (Two models / All models / predictions) only
-        # exist once a tab is first activated, so the ``document_ready`` pass
-        # above never sees them and they stay at desktop height on phones. When
-        # the active tab changes, re-apply the heights once the freshly built
-        # Plotly panes have rendered.
-        def _on_load():
-            tabs_model = _first_model(self.app)
-            if tabs_model is None:
-                return
-            tabs_model.js_on_change(
-                "active",
-                CustomJS(
-                    code=(
-                        "for (const delay of [0, 50, 200, 500, 1200]) {"
-                        "  setTimeout(() => {"
-                        "    if (window.applyResponsiveHeights) window.applyResponsiveHeights();"
-                        "  }, delay);"
-                        "}"
-                    )
-                ),
-            )
-
-        pn.state.onload(_on_load)
 
     def _style_reorderable_sidebar(self, sidebar, widget_idx):
         """Move Model + Label-by above the plots on phones.
@@ -927,10 +794,6 @@ class DashBoard(DashBoardHelper):
         else:
 
             self.init_interactive_embed_plot(widget_idx)
-            self._make_plot_height_responsive(
-                self.interactive_embed_plot[widget_idx],
-                bacpipe.settings.embed_fig_height,
-            )
 
             # Callback to update plot when any selector changes, while preserving accordion state.
             def update_plot_on_change(event):
@@ -1027,13 +890,10 @@ class DashBoard(DashBoardHelper):
             # it installs a second ResizeObserver that fights the pane the same
             # way.
             sizing_mode="stretch_width",
+            # See ``model_page``: ``min_width=0`` stops the plot's intrinsic
+            # width from blowing up the desktop flex row.
+            min_width=0,
         )
-        self._make_plot_height_responsive(
-            self.spectrogram_plot_panel[widget_idx],
-            self.kwargs.get("spectrogram_plot_height")
-            or bacpipe.settings.spectrogram_plot_height,
-        )
-
         embedding_info_dialogue = pn.widgets.StaticText(
             value="",
             sizing_mode="stretch_width",
@@ -1076,6 +936,10 @@ class DashBoard(DashBoardHelper):
         )
         self.spec_plot_obj[widget_idx].audio_player = audio_player
         self.audio_player[widget_idx] = audio_player
+        # The native <audio> bar is hidden on phones (the "Play audio" button
+        # and tap-on-point autoplay already drive this same element) but kept on
+        # desktop, where the native controls are the most convenient trigger.
+        _add_stylesheet(audio_player, _MOBILE_HIDE_AUDIO_CSS)
 
         # Clicking a point in the embedding plot loads its spectrogram and, by
         # default, also loads the matching segment and starts it playing on the
@@ -1278,11 +1142,20 @@ class DashBoard(DashBoardHelper):
             # The embedding plot sits next to the spectrogram on wide screens.
             # ``_mobile_stack_row`` stacks them on phones with the embedding
             # plot first (on top) and the spectrograms below it.
+            #
+            # ``min_width=0`` keeps each accordion from growing to fit its
+            # plot's intrinsic width on desktop. Flex items default to
+            # ``min-width: auto``, so without it a WebGL scatter plot whose
+            # canvas wants more room than its share pushes the row wider on
+            # every layout pass — the "shivering" / click-driven width growth.
+            # (The mobile stylesheet already forces ``min-width: 0`` under the
+            # phone breakpoint, so this only affects the desktop layout.)
             data_panels = _mobile_stack_row(
                 pn.Accordion(
                     self.embedding_panel(widget_idx),
                     active=[0],
                     sizing_mode="stretch_width",
+                    min_width=0,
                 ),
                 pn.Accordion(
                     self.spectrogram_panel(widget_idx),
@@ -1290,6 +1163,7 @@ class DashBoard(DashBoardHelper):
                     self.probing_panel(widget_idx),
                     active=[0, 1, 2],
                     sizing_mode="stretch_width",
+                    min_width=0,
                 ),
             )
         else:
@@ -1775,7 +1649,13 @@ class DashBoard(DashBoardHelper):
             (
                 "Two models",
                 _mobile_stack_row(
-                    _mobile_move_last(_mobile_stack_row(sidebar1, sidebar2)),
+                    # Stacked column: this restores the original single-sidebar
+                    # layout for the two-model view (one shared Model/Label-by
+                    # sidebar above the two model content panes). The old
+                    # ``_mobile_stack_row(sidebar1, sidebar2)`` put the two
+                    # sidebars *side by side* on desktop, which was a mobile
+                    # regression leaking into the desktop layout.
+                    _mobile_move_last(pn.Column(sidebar1, sidebar2)),
                     _mobile_stack_row(content1, content2),
                     sizing_mode="stretch_both",
                 ),
@@ -1785,7 +1665,7 @@ class DashBoard(DashBoardHelper):
             (
                 "Two Model Predictions",
                 _mobile_stack_row(
-                    _mobile_move_last(_mobile_stack_row(sidebar4, sidebar5)),
+                    _mobile_move_last(pn.Column(sidebar4, sidebar5)),
                     _mobile_stack_row(content4, content5),
                     sizing_mode="stretch_both",
                 ),
@@ -1801,12 +1681,20 @@ class DashBoard(DashBoardHelper):
         # dashboard fits the width of a phone instead of scrolling sideways.
         apply_mobile_styles(self.app)
 
-        # Halve the embedding + spectrogram plots on phones (client side).
-        self._install_responsive_height_js()
+        # NOTE: the desktop layout deliberately does *not* install the
+        # client-side responsive plot-height JS (``_install_responsive_height_js``).
+        # That JS re-ran ``Plotly.Plots.resize`` on every window resize and on a
+        # retry ladder, which fought Panel's own relayout and made the desktop
+        # plots "shiver". Mobile gets its own server-side plot heights in
+        # ``dashboard_mobile.py`` instead.
 
     def add_styling(self, *pages):
         """
-        Add the logo, contact info, and close button to each page sidebar.
+        Add the logo and contact info to each page sidebar.
+
+        The former "close dashboard" button (which called ``sys.exit(0)`` and
+        killed the whole server from a visitor's session) has been removed so no
+        one can take the dashboard down.
 
         Parameters
         ----------
@@ -1841,25 +1729,6 @@ class DashBoard(DashBoardHelper):
                     
                     To stay updated with new releases, subscribe to the [newsletter](https://buttondown.com/vskode)
                     """)))
-            # Add close button to the header
-            close_button = pn.widgets.Button(name="❌ close dashboard")
-
-            def shutdown_callback(event):
-                """
-                Shut down the dashboard server.
-
-                Parameters
-                ----------
-                event : object
-                    panel button click event
-                """
-                logger.info("Shutting down dashboard server...")
-                sys.exit(0)
-
-            close_button.on_click(shutdown_callback)
-
-            sidebar.append(_mobile_move_last(close_button))
-
 
 def visualize_using_dashboard(
     models,
@@ -1928,7 +1797,20 @@ def visualize_using_dashboard(
         audio_dir = DashBoard.get_audio_dir()
 
         session_kwargs = {**kwargs, "audio_dir": audio_dir}
-        dashboard = DashBoard(models, **session_kwargs)
+
+        # The website serves a dedicated mobile layout (``dashboard_mobile.py``)
+        # when the visitor's device requests it via ``?device=mobile`` (set by
+        # ``dashboard.html``). Desktop keeps the full multi-tab dashboard here,
+        # so mobile-only UI changes can never destabilise the desktop layout.
+        device = pn.state.session_args.get("device", [None])[0]
+        if isinstance(device, bytes):
+            device = device.decode("utf-8")
+        if device == "mobile":
+            from .dashboard_mobile import DashBoardMobile
+
+            dashboard = DashBoardMobile(models, **session_kwargs)
+        else:
+            dashboard = DashBoard(models, **session_kwargs)
 
         # Build the dashboard layout
         try:
