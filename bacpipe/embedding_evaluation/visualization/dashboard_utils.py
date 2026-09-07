@@ -190,14 +190,14 @@ class DashBoardHelper:
             SpectrogramPlot.dummy_image(title="Loading..."),
             height=settings.embed_fig_height,
             # Responsive width + fixed height, with the figure on
-            # ``autosize=True`` (full explanation in
-            # ``dashboard.spectrogram_panel``). The old
-            # ``sizing_mode="stretch_width"`` + ``autosize=False`` combo made
-            # Panel relayout the figure on every layout pass and the plot
-            # oscillated in width (permanently shaking); ``autosize=True``
-            # breaks that loop. Do *not* use ``styles={"display": "contents"}``
-            # here: it drops the pane's box so the plot overlaps whatever is
-            # below it.
+            # ``autosize=True``. ``config={"responsive": True}`` makes Plotly.js
+            # own its resizing via its own ResizeObserver (full explanation in
+            # ``dashboard.spectrogram_panel``), so Panel's per-layout relayout
+            # matches what Plotly already computed and nothing feeds back into
+            # itself (the old ``autosize=False`` + ``stretch_width`` combo
+            # "shivered"). Do *not* use ``styles={"display": "contents"}`` here:
+            # it drops the pane's box so the plot overlaps whatever is below it.
+            config={"responsive": True},
             sizing_mode="stretch_width",
             # See ``dashboard.model_page``: ``min_width=0`` stops the plot's
             # intrinsic width from blowing up the desktop flex row.

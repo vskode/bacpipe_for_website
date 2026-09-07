@@ -130,7 +130,10 @@ class SpectrogramPlot:
                 "Click an embedding to see the corresponding spectrogram"
             )
 
-        # Extract data from click
+        # Extract data from click. Plotly appends the trace's ``curveNumber``
+        # as an extra trailing element on the customdata array (so a 6-column
+        # ``custom_data`` arrives here as 7 elements). Unpack the first six and
+        # ignore anything after them.
         point_data = clickData.get("customdata", [None] * 6)
         (
             audiofilename,
@@ -139,7 +142,7 @@ class SpectrogramPlot:
             idx,
             label,
             variable_labels_json,
-            label_id,
+            *_,
         ) = point_data
 
         # Load Audio

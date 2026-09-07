@@ -671,6 +671,19 @@ class DashBoard(DashBoardHelper):
 
         self.evaluation_task = evaluation_task
         self.dim_reduction_model = dim_reduction_model
+
+        # Only offer models that actually have dimensionality-reduced embeddings
+        # for this dataset. A model listed in the config but never evaluated for
+        # the current dataset would otherwise crash the spectrogram panel (which
+        # pre-loads metadata for every model option) and make the whole dataset
+        # fail to show. This keeps the dashboard working even when the config's
+        # ``models`` list has drifted from what was actually computed.
+        self.models = [
+            m for m in self.models if self._model_has_embeddings(m)
+        ]
+        if not self.models:
+            self.models = list(model_names)
+
         self.widget_width = 100
         self.vis_loader = EmbedAndLabelLoader(
             dim_reduction_model=dim_reduction_model,
@@ -713,6 +726,25 @@ class DashBoard(DashBoardHelper):
 
         self.heatmap_plot = dict()
         self.kwargs = kwargs
+
+    def _model_has_embeddings(self, model_name):
+        """Return True if ``model_name`` has dimensionality-reduced embeddings
+        for the current dataset.
+
+        Uses the same path resolution the embedding plot relies on, so a model
+        is kept only when it can actually be rendered.
+        """
+        try:
+            le.get_dim_reduc_path_func(
+                model_name, dim_reduction_model=self.dim_reduction_model
+            )
+            return True
+        except Exception:
+            logger.warning(
+                f"Model '{model_name}' has no dimensionality-reduced embeddings "
+                "for this dataset — hiding it from the dashboard."
+            )
+            return False
 
     @staticmethod
     def get_audio_dir():
@@ -878,17 +910,16 @@ class DashBoard(DashBoardHelper):
             SpectrogramPlot.dummy_image(title=""),
             height=self.kwargs.get("spectrogram_plot_height"),
             # Responsive width + fixed height, with the figure on
-            # ``autosize=True``. Panel's Plotly view relayouts the figure to the
-            # pane's clientWidth on every layout pass (``after_layout`` ->
-            # ``Plotly.relayout({width, height})``); with ``autosize=True`` that
-            # relayout is a no-op for the rendered size, so Bokeh's layout does
-            # not feed back into itself and the plot does not oscillate (the old
-            # ``autosize=False`` + ``stretch_width`` combo "shivered").
-            # Do *not* use ``styles={"display": "contents"}`` here: it removes
-            # the pane's own box so the plot overflows into the accordions and
-            # buttons below. And do *not* pass ``config={"responsive": True}``:
-            # it installs a second ResizeObserver that fights the pane the same
-            # way.
+            # ``autosize=True``. ``config={"responsive": True}`` hands resizing
+            # to Plotly.js's own ResizeObserver, so Plotly keeps the rendered
+            # size glued to the container and Panel's per-layout relayout
+            # (``after_layout`` -> ``Plotly.relayout({width, height})``) becomes
+            # a no-op instead of feeding back into Bokeh's layout and making the
+            # plot oscillate (the old ``autosize=False`` + ``stretch_width``
+            # combo "shivered"). Do *not* use ``styles={"display": "contents"}``
+            # here: it removes the pane's own box so the plot overflows into the
+            # accordions and buttons below.
+            config={"responsive": True},
             sizing_mode="stretch_width",
             # See ``model_page``: ``min_width=0`` stops the plot's intrinsic
             # width from blowing up the desktop flex row.

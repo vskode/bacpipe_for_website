@@ -1339,14 +1339,17 @@ def plot_embeddings_px(
                 color_discrete_sequence=COLOR_DISCRETE,
             )
 
-        # Configure the Discrete Legend
+        # Configure the Discrete Legend. It must stay *inside* the plot area:
+        # anchored at x=1.02 the legend sits outside the axes and reserves extra
+        # horizontal space, which feeds back into Bokeh's layout and makes the
+        # plot width oscillate on every layout pass (the "shivering" dashboard).
         fig.update_layout(
             legend=dict(
                 orientation="v",
                 yanchor="bottom",
                 y=0,
-                xanchor="left",
-                x=1.02,
+                xanchor="right",
+                x=0.99,
                 title_text=label_by,
             )
         )
