@@ -118,6 +118,41 @@ _MOBILE_ITEM_CSS = f"""
 }}
 """
 
+# On desktop, a flex item that is supposed to stretch (``stretch_width``) still
+# defaults to ``min-width: auto``, so it refuses to shrink below its own
+# content's intrinsic width. The two Plotly accordions report that intrinsic
+# width back into the layout, so without ``min-width: 0`` the row (and its
+# stretch child) overflows the viewport and, on every click that swaps a
+# figure, the columns ratchet wider and shiver. ``min-width: 0`` lets the item
+# actually shrink to the space the flex row gives it.
+_DESKTOP_ITEM_CSS = f"""
+@media (min-width: {MOBILE_BREAKPOINT + 1}px) {{
+  :host {{
+    min-width: 0 !important;
+  }}
+}}
+"""
+
+# The embedding and spectrogram accordions sit side by side in a flex row on
+# desktop. ``stretch_width`` gives each ``flex: 1 1 auto`` — the flex *basis* is
+# the child's own content width, and the Plotly panes report that content width
+# back into the layout on every layout pass. With an ``auto`` basis the two
+# columns trade width back and forth and, on every click, the spectrogram
+# ratchets further right. ``flex-basis: 0`` makes the two columns share the row
+# 50/50 regardless of content, so each pane gets a stable clientWidth and the
+# relayout is a no-op. (This complements ``_DESKTOP_ITEM_CSS``: that one lets
+# the *row's* items shrink below their content, this one makes the accordions
+# split the space evenly instead of by content.)
+_DESKTOP_EVEN_SPLIT_CSS = f"""
+@media (min-width: {MOBILE_BREAKPOINT + 1}px) {{
+  :host {{
+    flex: 1 1 0% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }}
+}}
+"""
+
 # On a phone the plots are what the visitor came for, so the settings column
 # (with the logo and contact block appended to it) is pushed to the bottom of
 # the stack. Flex ``order`` does that without touching the desktop layout, where
@@ -372,6 +407,11 @@ def _mobile_stack_row(*items, **kwargs):
     )
     for item in items:
         _add_stylesheet(item, _MOBILE_ITEM_CSS)
+        # Desktop counterpart of ``_MOBILE_ITEM_CSS`` (see its comment): the
+        # media query above only relaxes ``min-width`` on phones, but the
+        # stretch items need it on desktop too or they refuse to shrink below
+        # their Plotly content and the row overflows/shivers.
+        _add_stylesheet(item, _DESKTOP_ITEM_CSS)
     return row
 
 
@@ -383,6 +423,17 @@ def _mobile_move_last(obj):
     it can be used inline in a layout definition.
     """
     _add_stylesheet(obj, _MOBILE_LAST_CSS)
+    return obj
+
+
+def _desktop_even_split(obj):
+    """Give a side-by-side panel a stable 50/50 flex share on desktop.
+
+    Returns ``obj`` so it can be used inline in a layout definition. See
+    ``_DESKTOP_EVEN_SPLIT_CSS`` for why this is needed (it stops the two
+    Plotly accordions from trading width / ratcheting right on every click).
+    """
+    _add_stylesheet(obj, _DESKTOP_EVEN_SPLIT_CSS)
     return obj
 
 
@@ -910,15 +961,13 @@ class DashBoard(DashBoardHelper):
             SpectrogramPlot.dummy_image(title=""),
             height=self.kwargs.get("spectrogram_plot_height"),
             # Responsive width + fixed height, with the figure on
-            # ``autosize=True``. ``config={"responsive": True}`` hands resizing
-            # to Plotly.js's own ResizeObserver, so Plotly keeps the rendered
-            # size glued to the container and Panel's per-layout relayout
-            # (``after_layout`` -> ``Plotly.relayout({width, height})``) becomes
-            # a no-op instead of feeding back into Bokeh's layout and making the
-            # plot oscillate (the old ``autosize=False`` + ``stretch_width``
-            # combo "shivered"). Do *not* use ``styles={"display": "contents"}``
-            # here: it removes the pane's own box so the plot overflows into the
-            # accordions and buttons below.
+            # ``autosize=True``. ``sizing_mode="stretch_width"`` + ``min_width=0``
+            # let the pane fill its column and shrink below its content width.
+            # The width is actually pinned by ``_DESKTOP_ITEM_CSS`` (applied in
+            # ``dashboard._mobile_stack_row``): the stretch flex items get
+            # ``min-width: 0`` on desktop, so the two Plotly accordions stop
+            # reporting their content width back into the layout and the row
+            # stops shivering on every click.
             config={"responsive": True},
             sizing_mode="stretch_width",
             # See ``model_page``: ``min_width=0`` stops the plot's intrinsic
@@ -1182,19 +1231,23 @@ class DashBoard(DashBoardHelper):
             # (The mobile stylesheet already forces ``min-width: 0`` under the
             # phone breakpoint, so this only affects the desktop layout.)
             data_panels = _mobile_stack_row(
-                pn.Accordion(
-                    self.embedding_panel(widget_idx),
-                    active=[0],
-                    sizing_mode="stretch_width",
-                    min_width=0,
+                _desktop_even_split(
+                    pn.Accordion(
+                        self.embedding_panel(widget_idx),
+                        active=[0],
+                        sizing_mode="stretch_width",
+                        min_width=0,
+                    )
                 ),
-                pn.Accordion(
-                    self.spectrogram_panel(widget_idx),
-                    self.clustering_panel(widget_idx),
-                    self.probing_panel(widget_idx),
-                    active=[0, 1, 2],
-                    sizing_mode="stretch_width",
-                    min_width=0,
+                _desktop_even_split(
+                    pn.Accordion(
+                        self.spectrogram_panel(widget_idx),
+                        self.clustering_panel(widget_idx),
+                        self.probing_panel(widget_idx),
+                        active=[0, 1, 2],
+                        sizing_mode="stretch_width",
+                        min_width=0,
+                    )
                 ),
             )
         else:
