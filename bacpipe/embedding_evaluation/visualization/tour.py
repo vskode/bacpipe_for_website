@@ -81,6 +81,7 @@ contact                every tab                 contact text below the logo
 two-models             Two models                the whole page
 all-models             All models                everything right of the sidebar
 all-models-sidebar     All models                the settings column
+all-models-probing     All models                "Probing Metrics" comparison plot
 predictions-sidebar    Single Model Predictions  the settings column
 clfier-select          Single Model Predictions  "Integrated or linear" radio
 run-classifier         Single Model Predictions  "Load predictions" / "Apply" button
@@ -419,6 +420,21 @@ EXTENDED_TOUR = [
         ),
         targets=["two-models"],
         tab="Two models",
+    ),
+    TourStep(
+        title="Compare probing across models",
+        text=(
+            "On the <b>All models</b> page, <b>Probing Metrics</b> puts the "
+            "probing results of every model into one plot: each line is a "
+            "model, each dot its accuracy on one class. The legend ranks the "
+            "models by their overall accuracy, best first.<br><br>"
+            "Where the lines split apart shows which sound types one model "
+            "tells apart better than another. <b>Classification Type</b> on "
+            "the left switches between the linear and the k-nearest-neighbour "
+            "probe."
+        ),
+        targets=["all-models-probing"],
+        tab="All models",
         # Loads while the visitor reads this step, so the heatmap is ready
         # on the predictions steps.
         actions=[ACTION_LOAD_PREDICTIONS],
@@ -681,7 +697,14 @@ def run_actions(message, actions):
 
 # On phones the question is hidden so the two buttons fit next to the title.
 _HEADER_LABEL_CSS = """
-:host { font-weight: 600; white-space: nowrap; }
+:host {
+  font-weight: 700;
+  font-size: 1.25rem;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 2px;
+}
 @media (max-width: 600px) { :host { display: none !important; } }
 """
 

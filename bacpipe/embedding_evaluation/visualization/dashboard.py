@@ -165,6 +165,22 @@ _DESKTOP_EVEN_SPLIT_CSS = f"""
 }}
 """
 
+# A tab's root layout is a *grid* item of ``pn.Tabs``. Grid items default to
+# ``min-width: auto`` too, so a tab whose content wants to be wider than the
+# window (two Plotly columns side by side) grows past the tab area instead of
+# being squeezed into it. The flex split inside it then works on that inflated
+# width, the figures relayout to it, and on every click the whole "Two models"
+# page ratchets wider and shivers. Pinning the tab root to the tab's width
+# gives the columns a fixed amount of space to share.
+_DESKTOP_TAB_ROOT_CSS = f"""
+@media (min-width: {MOBILE_BREAKPOINT + 1}px) {{
+  :host {{
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }}
+}}
+"""
+
 # On a phone the plots are what the visitor came for, so the settings column
 # (with the logo and contact block appended to it) is pushed to the bottom of
 # the stack. Flex ``order`` does that without touching the desktop layout, where
@@ -371,6 +387,12 @@ html, body {{
   }}
 }}
 """
+
+
+# Widget indices of the side-by-side pages ("Two models": 1, 2; "Two Model
+# Predictions": 5, 6) -> which of the two models they show. Used for the
+# "Settings 1/2" sidebar titles and the "Model 1/2" column titles.
+_PAIR_NUMBER = {1: 1, 2: 2, 5: 1, 6: 2}
 
 
 def _add_stylesheet(obj, css):
@@ -1400,7 +1422,12 @@ class DashBoard(DashBoardHelper):
             mark_target(self.model_select.get(widget_idx), "model-select")
             mark_target(self.label_select.get(widget_idx), "label-select")
             mark_target(self.noise_select.get(widget_idx), "view-annotated")
-        title_string = "Model Dashboard for {}".format
+        if widget_idx in _PAIR_NUMBER:
+            # Side-by-side columns: "Model 1: birdnet" / "Model 2: perch_v2",
+            # matching the "Settings 1/2" sidebars.
+            title_string = f"Model {_PAIR_NUMBER[widget_idx]}: {{}}".format
+        else:
+            title_string = "Model Dashboard for {}".format
         accordion_title = pn.bind(title_string, self.model_select[widget_idx])
         if single_model:
             # The embedding plot sits next to the spectrogram on wide screens.
@@ -1443,6 +1470,7 @@ class DashBoard(DashBoardHelper):
                 ),
             )
         else:
+            # ``min_width=0``: same reason as the single-model accordions above.
             data_panels = pn.Accordion(
                 self.embedding_panel(widget_idx),
                 self.spectrogram_panel(widget_idx),
@@ -1450,6 +1478,7 @@ class DashBoard(DashBoardHelper):
                 self.probing_panel(widget_idx),
                 active=[0, 1, 2, 3],
                 sizing_mode="stretch_width",
+                min_width=0,
             )
 
         main_content = pn.Column(
@@ -1553,7 +1582,7 @@ class DashBoard(DashBoardHelper):
                 ),
                 (
                     "Probing Metrics",
-                    (
+                    mark_target(
                         self.plot_widget(
                             plot_per_class_results,
                             plot_path=None,
@@ -1567,7 +1596,8 @@ class DashBoard(DashBoardHelper):
                         else pn.pane.Markdown(
                             "No probing task specified. "
                             "Please check the config file."
-                        )
+                        ),
+                        "all-models-probing",
                     ),
                 ),
                 active=[0, 1, 2],
@@ -1718,7 +1748,16 @@ class DashBoard(DashBoardHelper):
         )
 
         main_content = pn.Column(
-            pn.pane.Markdown("## Classifier Predictions"),
+            pn.pane.Markdown(
+                pn.bind(
+                    lambda model: (
+                        f"## Model {_PAIR_NUMBER[widget_idx]}: {model}"
+                        if widget_idx in _PAIR_NUMBER
+                        else "## Classifier Predictions"
+                    ),
+                    self.model_select[widget_idx],
+                )
+            ),
             pn.Accordion(
                 ("Classification settings", settings_content),
                 ("Classification heatmap", heatmap_content),
@@ -1875,7 +1914,12 @@ class DashBoard(DashBoardHelper):
         pn.Column
             column of sidebar widgets
         """
-        widgets = [pn.pane.Markdown("## Settings")]
+        number = _PAIR_NUMBER.get(widget_idx)
+        widgets = [
+            pn.pane.Markdown(
+                "## Settings" if number is None else f"### Settings {number}"
+            )
+        ]
 
         if model:
             widgets.append(
@@ -2032,15 +2076,20 @@ class DashBoard(DashBoardHelper):
         sidebar4, content4 = apply_classifier1_page.objects
         sidebar5, content5 = apply_classifier2_page.objects
 
-        # Wrap sidebars with titles
-        sidebar0 = pn.Column(
-            pn.pane.Markdown("## Model 1"),
-            sidebar0,  # , sizing_mode="stretch_height"
-        )
-        sidebar1 = pn.Column(
-            pn.pane.Markdown("## Model 2"),
-            sidebar1,  # , sizing_mode="stretch_height"
-        )
+        # The two model columns of the "Two models" / "Two Model Predictions"
+        # tabs sit side by side, just like the embedding + spectrogram
+        # accordions of the single-model page, and need the same 50/50 split
+        # (see ``_DESKTOP_EVEN_SPLIT_CSS``). Without it each column's flex basis
+        # was its Plotly content width, so every click made the two columns
+        # trade width (shiver) and the row ratchet wider than the window.
+        for content in (content1, content2, content4, content5):
+            _desktop_even_split(content)
+
+        # The two stacked sidebars of the two-model tabs share one "Settings"
+        # heading; each sidebar is then titled "Settings 1" / "Settings 2"
+        # (see ``_PAIR_NUMBER``), matching the "Model 1" / "Model 2" columns.
+        def _pair_sidebar(first, second):
+            return pn.Column(pn.pane.Markdown("## Settings"), first, second)
 
         tabs = [
             ("Single model", model0_page),
@@ -2054,8 +2103,12 @@ class DashBoard(DashBoardHelper):
                         # ``_mobile_stack_row(sidebar1, sidebar2)`` put the two
                         # sidebars *side by side* on desktop, which was a mobile
                         # regression leaking into the desktop layout.
-                        _mobile_move_last(pn.Column(sidebar1, sidebar2)),
-                        _mobile_stack_row(content1, content2),
+                        _mobile_move_last(_pair_sidebar(sidebar1, sidebar2)),
+                        # The row of model columns takes exactly the space
+                        # left next to the sidebar, not its content's width.
+                        _desktop_even_split(
+                            _mobile_stack_row(content1, content2)
+                        ),
                         sizing_mode="stretch_both",
                     ),
                     "two-models",
@@ -2066,8 +2119,8 @@ class DashBoard(DashBoardHelper):
             (
                 "Two Model Predictions",
                 _mobile_stack_row(
-                    _mobile_move_last(pn.Column(sidebar4, sidebar5)),
-                    _mobile_stack_row(content4, content5),
+                    _mobile_move_last(_pair_sidebar(sidebar4, sidebar5)),
+                    _desktop_even_split(_mobile_stack_row(content4, content5)),
                     sizing_mode="stretch_both",
                 ),
             ),
@@ -2075,6 +2128,8 @@ class DashBoard(DashBoardHelper):
         # The tour (tour.py) switches tabs by these labels and skips steps on
         # tabs a layout does not have.
         self.tab_names = [name for name, _ in tabs]
+        for _, page in tabs:
+            _add_stylesheet(page, _DESKTOP_TAB_ROOT_CSS)
         self.app = pn.Tabs(*tabs, dynamic=True)
 
         self.add_styling(
