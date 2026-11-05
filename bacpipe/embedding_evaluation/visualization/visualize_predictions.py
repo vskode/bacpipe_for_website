@@ -569,8 +569,9 @@ class PredictionsLoader:
         # If no trained probe exists, fall back to the integrated classifier.
         if clfier_type is None:
             clfier_type = getattr(self, "current_clfier_type", "Integrated")
+        # The probe of the model being shown, not of the first model.
         if not (
-            self.path_func(self.models[0]).probe_path / "linear_probe.pt"
+            self.path_func(model).probe_path / "linear_probe.pt"
         ).exists():
             logger.warning(
                 "\nNo Linear probe has been trained yet, therefore Linear is not "

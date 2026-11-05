@@ -236,6 +236,12 @@ dashboard_address: localhost
 # into an existing html website
 dashboard_websocket_origin: False
 
+# if this is True, "Save selection to file" and "Save Figure" download the
+# file to the visitor's browser instead of saving it into the results folder
+# on the machine running the dashboard (used for the public website, so
+# visitors cannot fill up the server's disk)
+dashboard_downloads: False
+
 # figure height specifications for dashboard
 embed_fig_height: 700
 spectrogram_plot_height: 550

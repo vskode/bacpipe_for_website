@@ -18,6 +18,9 @@ from tornado.web import RequestHandler
 from dataset_manager import get_available_datasets
 
 bacpipe.settings.dashboard_port = 5006
+# Visitors download selections and figures instead of saving them on the
+# server (see ``dashboard_downloads`` in bacpipe/settings.yaml).
+bacpipe.settings.dashboard_downloads = True
 bacpipe.settings.dashboard_websocket_origin = [
     'localhost:5006',
     'localhost:5177',
@@ -42,6 +45,9 @@ class DatasetListHandler(RequestHandler):
     def get(self):
         datasets = get_available_datasets()
         self.set_header("Content-Type", "application/json")
+        # Locally the site (localhost:5177) and this server (:5006) are
+        # different origins; without this the browser blocks the response.
+        self.set_header("Access-Control-Allow-Origin", "*")
         self.write(json.dumps({'success': True, 'datasets': datasets}))
 
 
