@@ -16,7 +16,7 @@ EXPECTED_PIPELINES = {
     "generate_embeddings",
 }
 EXPECTED_LABEL_HELPERS = {
-    "create_metadata_labels",
+    "metadata_labels",
     "ground_truth_by_model",
     "get_dt_filename",
 }
@@ -55,8 +55,8 @@ class TestSupportedModels:
         assert isinstance(bacpipe.supported_models, list)
         assert len(bacpipe.supported_models) > 0
 
-    def test_contains_birdnet(self):
-        assert "birdnet" in bacpipe.supported_models
+    def test_contains_insect459(self):
+        assert "insect459" in bacpipe.supported_models
 
 
 class TestEmbeddingDimensions:

@@ -1,6 +1,6 @@
 [project]
 name = "bacpipe"
-version = "1.3.4"
+version = "1.3.5"
 description = "Use bacpipe to streamline the process of generating embeddings and analysing your PAM datasets."
 readme = "README.md"
 authors = [
@@ -60,6 +60,7 @@ dependencies = [
     # --- Plotting and testing ---
     "panel>=1.6.2, <2.0.0",
     "plotly>=6.6.0, <7.0.0",
+    "kaleido==1.3.0",
     "pytest>=9.1.1, <10.0.0",
 
     # --- Bioacoustic Packages ---
@@ -82,6 +83,7 @@ dependencies = [
     "nvidia-nvtx-cu12==12.4.127; sys_platform == 'linux'",
     "triton==3.2.0; sys_platform == 'linux'",
     "tensorstore==0.1.74; sys_platform == 'linux'",
+    "onnxruntime-gpu>=1.26.0, <2.0.0; sys_platform == 'linux'",
 ]
 
 

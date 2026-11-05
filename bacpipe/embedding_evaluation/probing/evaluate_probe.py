@@ -210,13 +210,20 @@ def save_probe_results(paths, config, metrics, **kwargs):
     for k, v in kwargs.items():
         if isinstance(v, Path):
             kwargs[k] = v.as_posix()
+        elif isinstance(v, np.ndarray):
+            kwargs[k] = v.tolist()
+        elif isinstance(v, (np.integer, np.floating, np.bool_)):
+            kwargs[k] = v.item()
 
     metrics["config"] = kwargs
 
     save_path = paths.probe_path.joinpath(f"probe_results_{config}.json")
 
     with open(save_path, "w") as f:
-        json.dump(metrics, f, indent=2)
+        # ``default=str`` keeps the dump from crashing on non-serializable
+        # values (e.g. a ``CustomModel``/``CustomModels`` class object that is
+        # forwarded through kwargs when a custom model is used).
+        json.dump(metrics, f, indent=2, default=str)
 
 
 def eval_probe(
@@ -224,7 +231,7 @@ def eval_probe(
     embeds,
     df,
     label2index,
-    device="cuda:0",
+    device="cpu",
     config="linear",
     paths=None,
     save_probe=False,
@@ -244,13 +251,15 @@ def eval_probe(
     label2index : dict
         link labels to ints
     device : str, optional
-        'cpu' or 'cuda', by default "cuda:0"
+        'cpu' or 'cuda', by default "cpu"
     config : str, optional
         type of classification, by default "linear"
     paths : SimpleNamespace object, optional
         paths used for saving the probe results, by default None
     save_probe : bool, optional
-        whether to save the trained probe and results, by default False
+        whether to save the trained probe and label mapping, by
+        default False. The evaluation results, confusion matrix and
+        plots are always saved when ``paths`` is provided.
 
     Returns
     -------
@@ -295,6 +304,8 @@ def eval_probe(
         torch.save(state_dict, paths.probe_path / f"{config}_probe.pt")
         with open(paths.probe_path / "label2index.json", "w") as f:
             json.dump(label2index, f, indent=1)
+
+    if not paths is None:
         save_probe_results(paths, config, results, **kwargs)
         save_confusion_matrix(
             paths, y_true, y_pred, label2index, task_name=config

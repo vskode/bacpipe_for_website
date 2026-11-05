@@ -19,24 +19,36 @@ logger = logging.getLogger(__name__)
 
 def convert_numpy_types(obj):
     """
-    Convert numpy types to native Python types.
+    Make an object json serializable by converting numpy types into their
+    native Python equivalents.
+
+    The sole purpose of this function is to catch numpy types (which
+    ``json.dumps`` cannot serialize). Every other object - most importantly
+    strings, which is what the majority of label values are - is returned
+    unchanged, so that label values always cascade through to the caller.
+    Returning ``None`` for unknown types would silently drop all string
+    labels from the hover text of the embedding plots.
 
     Parameters
     ----------
-    obj : numpy object
-        object to be converted
+    obj : object
+        object to be converted, typically a numpy scalar, a numpy array,
+        a string or a native Python type
 
     Returns
     -------
-    int or float or list
-        object converted to a native Python type
+    int or float or bool or str or list or object
+        numpy arrays are converted to lists, numpy scalars (e.g. np.int32,
+        np.int64, np.float32) to their native Python type, any other object
+        is returned unchanged
     """
-    if isinstance(obj, np.int64):
-        return int(obj)
-    elif isinstance(obj, np.float32):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
+    if isinstance(obj, np.ndarray):
         return obj.tolist()
+    elif isinstance(obj, np.generic):
+        # covers np.int32, np.int64, np.float32, np.bool_, np.str_, ...
+        return obj.item()
+    else:
+        return obj
 
 
 def save_clustering_performance(paths, clusterings, metrics, label_column):
@@ -70,6 +82,22 @@ def run_clustering(
 ):
     """
     Fit clustering algorithms to embeddings.
+
+    Examples::
+        #Fit a k-means clustering to the already computed ``birdnet`` embeddings:
+
+        from sklearn.cluster import KMeans
+
+        loader = bacpipe.Loader(
+            'bacpipe/tests/test_data',
+            model_name='birdnet',
+            use_folder_structure=True,
+        )
+        embeds = loader.embeddings(return_type='array')
+        clusterings = bacpipe.run_clustering(
+            embeds=embeds,
+            cluster_configs={'kmeans': KMeans(n_clusters=3, n_init=10)},
+        )
 
     Parameters
     ----------
@@ -112,6 +140,47 @@ def eval_clustering(
 ):
     """
     Evaluate clustering performance.
+
+    Examples::
+    
+        # Evaluate the k-means clustering against the ground truth and the
+        # metadata labels of the ``birdnet`` embeddings:
+
+        from sklearn.cluster import KMeans
+
+        loader = bacpipe.Loader(
+            'bacpipe/tests/test_data',
+            model_name='birdnet',
+            use_folder_structure=True,
+        )
+        embeds = loader.embeddings(return_type='array')
+        gt_labels = bacpipe.ground_truth_by_model(
+            model='birdnet',
+            audio_dir='bacpipe/tests/test_data',
+            main_results_dir='bacpipe_results',
+            overwrite=False,
+        )['simultaneous_labels'].values
+        
+        clusterings = bacpipe.run_clustering(
+            embeds=embeds,
+            cluster_configs={'kmeans': KMeans(n_clusters=3, n_init=10)},
+            ground_truth=gt_labels,
+        )
+        
+        metadata = bacpipe.metadata_labels(
+            model='birdnet',
+            audio_dir='bacpipe/tests/test_data',
+            main_results_dir='bacpipe_results',
+            overwrite=False,
+            return_type='dict',
+        )
+        
+        results = bacpipe.eval_clustering(
+            clusterings,
+            ground_truth=gt_labels,
+            embeds=embeds,
+            metadata_labels=metadata,
+        )
 
     Parameters
     ----------
@@ -163,6 +232,29 @@ def eval_clustering(
 def eval_with_silhouette(embeds, ground_truth, metrics=None):
     """
     Evaluate clustering using Silhouette Score.
+
+    Examples::
+    
+        # Compute the silhouette score of the already computed ``birdnet``
+        # embeddings:
+
+        loader = bacpipe.Loader(
+            'bacpipe/tests/test_data',
+            model_name='birdnet',
+            use_folder_structure=True,
+        )
+        embeds = loader.embeddings(return_type='array')
+        
+        gt_labels = bacpipe.ground_truth_by_model(
+            model='birdnet',
+            audio_dir='bacpipe/tests/test_data',
+            main_results_dir='bacpipe_results',
+            overwrite=False,
+        )['simultaneous_labels'].values
+        
+        metrics = bacpipe.eval_with_silhouette(
+            embeds, ground_truth=gt_labels
+        )
 
     Parameters
     ----------
@@ -263,6 +355,35 @@ def clustering_pipeline(
     settings file. Clusterings are then evaluated and a dictionary
     with the evaluation scores is saved and returned
 
+    Examples::
+    
+        # Run (or load, if ``overwrite=False``) the full clustering pipeline for
+        # the already computed ``birdnet`` embeddings:
+
+        loader = bacpipe.Loader(
+            'bacpipe/tests/test_data',
+            model_name='birdnet',
+            use_folder_structure=True,
+        )
+        
+        embeds = loader.embeddings(return_type='array')
+        
+        gt = bacpipe.ground_truth_by_model(
+            model='birdnet',
+            audio_dir='bacpipe/tests/test_data',
+            main_results_dir='bacpipe_results',
+            overwrite=False,
+        )
+        
+        clusterings, clust_results = bacpipe.clustering_pipeline(
+            model_name='birdnet',
+            ground_truth=gt,
+            embeds=embeds,
+            overwrite=False,
+            audio_dir='bacpipe/tests/test_data',
+            main_results_dir='bacpipe_results',
+        )
+
     Parameters
     ----------
     model_name : str
@@ -278,12 +399,12 @@ def clustering_pipeline(
     label_column : str, optional
         name of column in annotations file, defaults to bacpipe.settings.label_column
     """
-    if not kwargs:
-        kwargs = {**vars(bacpipe.settings)}
-        kwargs.pop("label_column")
+    kwargs = {**vars(bacpipe.settings), **kwargs}
+    kwargs.pop("label_column", None)
     if not paths:
         get_paths_func = bacpipe.make_set_paths_func(
-            bacpipe.config.audio_dir, bacpipe.settings.main_results_dir
+            kwargs.get("audio_dir", bacpipe.config.audio_dir),
+            kwargs.get("main_results_dir", bacpipe.settings.main_results_dir),
         )
         paths = get_paths_func(model_name)
     if overwrite or not len(list(paths.clust_path.glob("*.json"))) > 0:
@@ -294,7 +415,7 @@ def clustering_pipeline(
         if not ground_truth is None and len(ground_truth) > 0:
             
             bool_noise = get_boolean_array_for_annotated_embeddings(
-                ground_truth, model_name
+                ground_truth, model_name, **kwargs
                 )
             ground_truth_1d = get_single_label_gt_labels(
                 ground_truth, bool_noise
@@ -307,7 +428,7 @@ def clustering_pipeline(
 
         cluster_configs = get_clustering_models(clust_params)
 
-        metadata_labels = le.create_metadata_labels(
+        metadata_labels = le.metadata_labels(
             paths.audio_dir, paths.clust_path.parent.stem, 
             paths, overwrite=False, return_type='dict', 
             **kwargs
@@ -332,9 +453,9 @@ def clustering_pipeline(
 
     else:
         logger.info(
-            "Clustering file cluster_metrics.json already exists and"
+            "\nClustering file cluster_metrics.json already exists and"
             " so is not computed. If you want to overwrite existing results, "
-            "set overwrite to True in settings.yaml."
+            "set overwrite to True in settings.yaml.\n"
         )
         clusterings = np.load(
             paths.clust_path.joinpath(f"clust_labels.npy"), allow_pickle=True
